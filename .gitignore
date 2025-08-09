@@ -139,3 +139,8 @@ tla+/**/states/
 tla+/**/*.out
 
 .DS_Store
+
+# quantvn
+
+# any csv files (this is regarding stock data,...)
+quantvn/*.csv
