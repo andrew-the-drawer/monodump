@@ -1,0 +1,221 @@
+{
+  "index_name": "VN30",
+  "exchange": "HOSE",
+  "last_updated": "September 2025",
+  "total_stocks": 30,
+  "description": "The VN30 Index represents the 30 largest and most liquid stocks listed on the Ho Chi Minh Stock Exchange (HOSE), reviewed semi-annually in January and July",
+  "stocks": [
+    {
+      "symbol": "VCB",
+      "company_name": "JOINT STOCK COMMERCIAL BANK FOR FOREIGN TRADE OF VIETNAM",
+      "sector": "Finance"
+    },
+    {
+      "symbol": "VIC",
+      "company_name": "VINGROUP JOINT STOCK COMPANY",
+      "sector": "Finance"
+    },
+    {
+      "symbol": "VHM",
+      "company_name": "VINHOMES JOINT STOCK COMPANY",
+      "sector": "Finance"
+    },
+    {
+      "symbol": "BID",
+      "company_name": "JOINT STOCK COMMERCIAL BANK FOR INVESTMENT AND DEVELOPMENT OF VIETNAM",
+      "sector": "Finance"
+    },
+    {
+      "symbol": "TCB",
+      "company_name": "VIETNAM TECHNOLOGICAL AND COMMERCIAL JOINT STOCK BANK",
+      "sector": "Finance"
+    },
+    {
+      "symbol": "CTG",
+      "company_name": "VIET NAM JOINT STOCK COMMERCIAL BANK FOR INDUSTRY AND TRADE",
+      "sector": "Finance"
+    },
+    {
+      "symbol": "VPB",
+      "company_name": "VIETNAM PROSPERITY JOINT STOCK COMMERCIAL BANK",
+      "sector": "Finance"
+    },
+    {
+      "symbol": "HPG",
+      "company_name": "HOA PHAT GROUP JOINT STOCK COMPANY",
+      "sector": "Non-energy minerals"
+    },
+    {
+      "symbol": "GAS",
+      "company_name": "PETROVIETNAM GAS JOINT STOCK CORPORATION",
+      "sector": "Utilities"
+    },
+    {
+      "symbol": "FPT",
+      "company_name": "FPT CORPORATION",
+      "sector": "Technology services"
+    },
+    {
+      "symbol": "MBB",
+      "company_name": "MILITARY COMMERCIAL JOINT STOCK BANK",
+      "sector": "Finance"
+    },
+    {
+      "symbol": "GVR",
+      "company_name": "VIETNAM RUBBER GROUP - JSC",
+      "sector": "Process industries"
+    },
+    {
+      "symbol": "VNM",
+      "company_name": "VIET NAM DAIRY PRODUCTS JOINT STOCK COMPANY",
+      "sector": "Consumer non-durables"
+    },
+    {
+      "symbol": "ACB",
+      "company_name": "ASIA COMMERCIAL BANK",
+      "sector": "Finance"
+    },
+    {
+      "symbol": "MSN",
+      "company_name": "MASAN GROUP CORPORATION",
+      "sector": "Consumer non-durables"
+    },
+    {
+      "symbol": "LPB",
+      "company_name": "FORTUNE VIETNAME JSC BANK",
+      "sector": "Finance"
+    },
+    {
+      "symbol": "MWG",
+      "company_name": "MOBILE WORLD INVESTMENT CORPORATION",
+      "sector": "Retail trade"
+    },
+    {
+      "symbol": "STB",
+      "company_name": "SAI GON THUONG TIN COMMERCIAL JOINT STOCK BANK",
+      "sector": "Finance"
+    },
+    {
+      "symbol": "HDB",
+      "company_name": "HO CHI MINH CITY DEVELOPMENT JOINT STOCK COMMERCIAL BANK",
+      "sector": "Finance"
+    },
+    {
+      "symbol": "SHB",
+      "company_name": "SAIGON-HANOI COMMERCIAL JT-STOCKBK",
+      "sector": "Finance"
+    },
+    {
+      "symbol": "BCM",
+      "company_name": "INV & INDUSTRIAL DEVELOPMENT CORP",
+      "sector": "Consumer durables"
+    },
+    {
+      "symbol": "SSI",
+      "company_name": "SAIGON SECURITIES INCORPORATION",
+      "sector": "Finance"
+    },
+    {
+      "symbol": "VJC",
+      "company_name": "VIETJET AVIATION JOINT STOCK COMPANY",
+      "sector": "Transportation"
+    },
+    {
+      "symbol": "VRE",
+      "company_name": "VINCOM RETAIL JOINT STOCK COMPANY",
+      "sector": "Finance"
+    },
+    {
+      "symbol": "SAB",
+      "company_name": "SAIGON BEER - ALCOHOL - BEVERAGE CORPORATION",
+      "sector": "Consumer non-durables"
+    },
+    {
+      "symbol": "VIB",
+      "company_name": "VIETNAM INTL COMMERCIAL BANK JSC",
+      "sector": "Finance"
+    },
+    {
+      "symbol": "SSB",
+      "company_name": "SOUTHEAST ASIA COMMERCIAL JS BANK",
+      "sector": "Finance"
+    },
+    {
+      "symbol": "TPB",
+      "company_name": "TIEN PHONG COMMERCIAL JOINT STOCK BANK",
+      "sector": "Finance"
+    },
+    {
+      "symbol": "PLX",
+      "company_name": "VIET NAM NATIONAL PETROLEUM GROUP",
+      "sector": "Distribution services"
+    },
+    {
+      "symbol": "BVH",
+      "company_name": "BAO VIET HOLDINGS",
+      "sector": "Finance"
+    }
+  ],
+  "recent_changes": {
+    "january_2025": {
+      "added": [
+        {
+          "symbol": "DGC",
+          "company_name": "DUC GIANG CHEMICALS GROUP",
+          "reason": "Improved market capitalization and liquidity"
+        },
+        {
+          "symbol": "VIB",
+          "company_name": "VIETNAM INTERNATIONAL BANK",
+          "reason": "Strong market performance and liquidity criteria"
+        }
+      ],
+      "removed": [
+        {
+          "symbol": "POW",
+          "company_name": "PETROVIETNAM POWER CORPORATION",
+          "reason": "32.5% decrease in liquidity and free-float ratio below 20%"
+        },
+        {
+          "symbol": "TPB",
+          "company_name": "TIEN PHONG COMMERCIAL JOINT STOCK BANK",
+          "reason": "Market cap dropped below top 40 HOSE stocks and 27.8% decrease in liquidity"
+        }
+      ]
+    },
+    "july_2025": {
+      "note": "DGC officially confirmed as VN30 member, replacing BVH according to some sources"
+    }
+  },
+  "sector_breakdown": {
+    "Finance": 16,
+    "Consumer non-durables": 3,
+    "Technology services": 1,
+    "Non-energy minerals": 1,
+    "Utilities": 1,
+    "Process industries": 1,
+    "Retail trade": 1,
+    "Consumer durables": 1,
+    "Transportation": 1,
+    "Distribution services": 1,
+    "Others": 3
+  },
+  "review_schedule": {
+    "frequency": "Semi-annual",
+    "months": ["January", "July"],
+    "effective_date": "Third working day of the last week of review month"
+  },
+  "criteria": {
+    "market_capitalization": "50% weight",
+    "liquidity": "30% weight",
+    "free_float_ratio": "20% weight (minimum 5%)",
+    "listing_period": "Minimum 6 months on HOSE"
+  },
+  "notes": [
+    "This list represents the most current composition as of September 2025",
+    "There are conflicting reports about exact composition due to recent reviews",
+    "DGC and LPB additions are confirmed but timing varies by source",
+    "Index represents approximately 75-80% of total HOSE market capitalization",
+    "Stocks must not be under regulatory supervision or trading suspension"
+  ]
+}
