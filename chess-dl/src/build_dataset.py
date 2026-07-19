@@ -12,15 +12,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from encoding import POLICY_SIZE, encode_board, move_to_index  # noqa: E402
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("inputs", nargs="+", help="one or more .jsonl files from generate_data.py")
-    ap.add_argument("--out", default="../data/dataset.npz")
-    args = ap.parse_args()
-
+def encode_jsonl_files(paths: list[str]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Encode one or more generate_data.py JSONL files into (X, P, V) arrays."""
     boards, policies, values = [], [], []
 
-    for path in args.inputs:
+    for path in paths:
         with open(path) as f:
             for line in f:
                 line = line.strip()
@@ -41,11 +37,21 @@ def main():
     X = np.stack(boards).astype(np.float32)
     P = np.stack(policies).astype(np.float32)
     V = np.array(values, dtype=np.float32)
+    return X, P, V
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("inputs", nargs="+", help="one or more .jsonl files from generate_data.py")
+    ap.add_argument("--out", default="../data/dataset.npz")
+    args = ap.parse_args()
+
+    X, P, V = encode_jsonl_files(args.inputs)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(out_path, X=X, P=P, V=V)
-    print(f"wrote {len(values)} positions to {out_path} (X={X.shape}, P={P.shape}, V={V.shape})")
+    print(f"wrote {len(V)} positions to {out_path} (X={X.shape}, P={P.shape}, V={V.shape})")
 
 
 if __name__ == "__main__":

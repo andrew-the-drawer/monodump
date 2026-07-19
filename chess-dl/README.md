@@ -26,7 +26,16 @@ minimal UCI wrapper around the student model.
 4. **`evaluate.py`** — plays the student against Stockfish at a capped
    `UCI_Elo` and reports W/D/L plus a rough Elo-gap estimate, so you can track
    whether the student is actually improving.
-5. **`uci_engine.py`** — wraps the trained model in a minimal UCI protocol so
+5. **`auto_train.py`** — unattended version of `train.py`: keeps training
+   epochs with early stopping (on validation loss) instead of a fixed epoch
+   count, checkpointing the best model as it goes and periodically running a
+   `evaluate.py`-style Stockfish match for a human-readable strength readout.
+6. **`auto_pipeline.py`** — the full unattended loop: generate data, train to
+   plateau (`auto_train`'s inner loop), generate *more* data, train again,
+   repeat — until more data stops improving measured playing strength. This
+   is what you actually want to background and leave running. See
+   "Unattended training" below.
+7. **`uci_engine.py`** — wraps the trained model in a minimal UCI protocol so
    it can be dropped into `lichess-bot` (or any UCI-speaking GUI/arena).
 
 Move encoding is `from_square * 64 + to_square` (4096 classes) with the board
@@ -72,12 +81,86 @@ Repeat 1–4 with more games / higher Stockfish depth / a bigger model
 takes `--init-from` to continue training an existing checkpoint on new data
 instead of starting over.
 
+## Unattended training
+
+`auto_pipeline.py` is the script to background and forget. It runs the whole
+loop end to end — generate self-play data, train to a plateau, generate more
+data, train again — climbing an **Elo ladder** against Stockfish as it goes,
+and stops once it either reaches the top rung or genuinely stops improving:
+
+```bash
+python auto_pipeline.py --data-path ../data/self_play.jsonl --out-dir ../checkpoints/auto \
+    --channels 64 --blocks 4 --games-per-round 200 --depth 10 \
+    --patience 40 --round-patience 5 \
+    --sf-elo-start 1350 --sf-elo-step 100 --sf-elo-max 2400 &
+
+tail -f ../checkpoints/auto/rounds.csv   # one line per round: Elo rung + strength trend
+tail -f ../checkpoints/auto/log.csv      # one line per epoch: training detail within a round
+```
+
+It's two nested early-stopping loops:
+
+- **Inner (per round, epochs):** trains on the data accumulated so far,
+  gated on **validation loss** — cheap to compute every epoch, and a good
+  proxy for "still learning from this dataset." Stops after `--patience`
+  epochs without a `--min-delta` improvement.
+- **Outer (across rounds):** after each round, plays `--round-eval-games`
+  games against Stockfish at the *current Elo rung* and compares the result
+  to previous rounds at that same rung. This — not validation loss — gates
+  the outer loop, because each round's dataset is bigger and different from
+  the last, so val_loss isn't comparable round-to-round the way it is
+  *within* one round's fixed dataset; measured strength against a constant
+  opponent is.
+
+**The opponent isn't fixed — it's a ladder.** A constant-Elo Stockfish is a
+bad outer-loop signal on its own: once the student reliably beats it, every
+later round reports basically the same score with nothing left to tell
+"still improving" from "plateaued" apart — the ceiling becomes the
+opponent, not the model. So the target `UCI_Elo` starts at `--sf-elo-start`
+(Stockfish's practical floor is ~1320) and rises by `--sf-elo-step` any time
+a round's score against the current rung reaches `--promotion-score`
+(default 0.5 — break-even), up to `--sf-elo-max` (default 2400, FIDE's
+International Master threshold). A level-up always counts as progress and
+resets the round-patience counter — it isn't a "stall" even though score
+legitimately drops back toward 0 against the harder opponent that follows.
+Reaching and beating `--sf-elo-max` stops the run as a success.
+
+Stops when: **(a)** the student beats Stockfish at `--sf-elo-max` — success;
+or **(b)** score at the *current* rung hasn't improved by more than
+`--round-min-delta` for `--round-patience` rounds — plateaued, likely
+capacity-limited (try bumping `--channels`/`--blocks` and resuming with
+`--init-from`); or **(c)** `--max-rounds` as a backstop.
+
+Data accumulates in `--data-path` (appended every round, like
+`generate_data.py` does on its own) and gets fully re-encoded into
+`../checkpoints/auto/dataset.npz` each round, so later rounds train on all
+self-play data generated so far. The model and optimizer stay in memory
+across rounds — each round warm-starts from exactly where the previous
+round's best checkpoint left off, so nothing is manually re-triggered
+between rounds. `best.npz` is always the best checkpoint from the
+most-recently-completed round (what you want for
+`evaluate.py`/`uci_engine.py`); `latest.npz` is the most recent epoch,
+useful for resuming with `--init-from` if you kill the run early.
+
+`--games-per-round`, `--depth`, etc. are `generate_data.py`'s knobs, passed
+straight through and reused every round; `--patience`/`--min-delta`/
+`--eval-every` control the inner loop (same meaning as in `auto_train.py`);
+`--round-patience`/`--round-min-delta`/`--round-eval-games`/`--max-rounds`/
+`--sf-elo-start`/`--sf-elo-step`/`--sf-elo-max`/`--promotion-score` control
+the outer loop and the Elo ladder.
+
+If you'd rather run the loops separately (e.g. to inspect/curate data or
+manually raise the Elo target between rounds), `generate_data.py` →
+`build_dataset.py` → `auto_train.py --sf-elo <rung> --init-from <previous
+best>` do the same thing manually, one round at a time.
+
 **Compute notes:** MLX runs on the Mac's GPU by default (`mx.default_device()`
 reports `gpu`) and is the primary path here. If a dataset/model gets too big
 for the laptop, the `.npz` format from `build_dataset.py` is plain NumPy, so
 the same data can be loaded by a PyTorch training script on Colab — only
-`model.py` and `train.py` would need a PyTorch port; `encoding.py`,
-`generate_data.py`, and `build_dataset.py` stay as-is.
+`model.py`, `train.py`, and `auto_train.py`/`auto_pipeline.py`'s training
+calls would need a PyTorch port; `encoding.py`, `generate_data.py`, and
+`build_dataset.py` stay as-is.
 
 ## Arena: playing on Lichess
 
@@ -106,7 +189,7 @@ the same data can be loaded by a PyTorch training script on Colab — only
      protocol: "uci"
      working_dir: "/Users/trung/Documents/personal/monodump/chess-dl/src"
      interpreter: "/Users/trung/Documents/personal/monodump/venv/bin/python"
-     interpreter_options: "uci_engine.py --checkpoint ../checkpoints/chessnet.npz --channels 64 --blocks 4"
+     interpreter_options: "uci_engine.py --checkpoint ../checkpoints/auto/best.npz --channels 64 --blocks 4"
    ```
    (Exact key names/nesting depend on the lichess-bot version — check its
    `config.yml.default` template. The key point: it needs to invoke the repo
