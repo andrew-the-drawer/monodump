@@ -144,3 +144,14 @@ tla+/**/*.out
 
 # any csv files (this is regarding stock data,...)
 quantvn/*.csv
+
+#venv
+venv/
+__pycache__
+
+# chess-dl
+# generated training data (jsonl/npz) and model checkpoints - large, regenerable
+chess-dl/data/*
+!chess-dl/data/.gitkeep
+chess-dl/checkpoints/*
+!chess-dl/checkpoints/.gitkeep
