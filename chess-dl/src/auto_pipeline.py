@@ -185,6 +185,21 @@ def main():
 
             # 2. rebuild the full dataset from all accumulated data so far
             X, P, V = encode_jsonl_files([str(data_path)])
+            # Guardrail: the policy loss is a soft-target cross-entropy, which
+            # is only bounded (>= 0) when every target row sums to 1. An
+            # un-normalized row lets training drive the logits to +/-inf and
+            # the loss to -inf -- silently, over many rounds. Fail loudly here
+            # instead. (encode_jsonl_files normalizes and drops empty rows, so
+            # this should always hold; it's a regression tripwire.)
+            row_sums = P.sum(axis=1)
+            n_bad = int((np.abs(row_sums - 1.0) > 1e-3).sum())
+            if n_bad:
+                raise ValueError(
+                    f"{n_bad}/{len(row_sums)} policy target rows are not normalized "
+                    f"(sum != 1; range [{row_sums.min():.4f}, {row_sums.max():.4f}]). "
+                    "Un-normalized soft targets make the policy loss diverge -- "
+                    "check build_dataset.encode_jsonl_files."
+                )
             np.savez_compressed(dataset_path, X=X, P=P, V=V)
             (Xtr, Ptr, Vtr), (Xval, Pval, Vval) = load_dataset(str(dataset_path), args.val_fraction, args.seed)
             print(

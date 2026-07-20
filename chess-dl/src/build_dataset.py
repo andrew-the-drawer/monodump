@@ -24,14 +24,28 @@ def encode_jsonl_files(paths: list[str]) -> tuple[np.ndarray, np.ndarray, np.nda
                     continue
                 rec = json.loads(line)
                 board = chess.Board(rec["fen"])
-                boards.append(encode_board(board))
 
                 policy = np.zeros(POLICY_SIZE, dtype=np.float32)
                 for uci, prob in zip(rec["moves_uci"], rec["probs"]):
                     idx = move_to_index(chess.Move.from_uci(uci), board)
-                    policy[idx] = prob
+                    # `+=`, not `=`: distinct top-K moves can collapse to the
+                    # same 4096 (from, to) index (e.g. under-promotions), and
+                    # overwriting would silently drop that probability mass,
+                    # leaving the row un-normalized. See the renormalize below.
+                    policy[idx] += prob
+                total = policy.sum()
+                if total <= 0:
+                    # no usable policy target for this record; skip it so we
+                    # never emit an all-zero row into the training set.
+                    continue
+                # Renormalize to a proper distribution (sum == 1). The policy
+                # loss (cross-entropy over a soft target) is only well-behaved
+                # for normalized targets; an un-normalized row makes the MLX
+                # cross-entropy unbounded and lets training diverge.
+                policy /= total
                 policies.append(policy)
 
+                boards.append(encode_board(board))
                 values.append(rec["value"])
 
     X = np.stack(boards).astype(np.float32)

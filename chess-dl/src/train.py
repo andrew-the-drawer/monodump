@@ -28,7 +28,14 @@ def load_dataset(path: str, val_fraction: float, seed: int):
 
 def loss_fn(model, x, p_target, v_target, value_weight):
     p_logits, v_pred = model(x)
-    policy_loss = nn.losses.cross_entropy(p_logits, p_target, reduction="mean")
+    # Soft-target cross-entropy written explicitly as -(target . log_softmax).
+    # This is bounded below by 0 for any non-negative target, so a stray
+    # un-normalized row can't make the loss diverge. (mx.nn cross_entropy
+    # computes logsumexp - sum(target * logits), which is only a valid
+    # cross-entropy when the target sums to 1 -- otherwise it is unbounded
+    # below and training will happily blow the logits up to drive it to -inf.)
+    log_probs = nn.log_softmax(p_logits, axis=-1)
+    policy_loss = -(p_target * log_probs).sum(axis=-1).mean()
     value_loss = nn.losses.mse_loss(v_pred, v_target, reduction="mean")
     return policy_loss + value_weight * value_loss, (policy_loss, value_loss)
 
