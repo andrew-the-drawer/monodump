@@ -13,13 +13,31 @@ from model import ChessNet
 
 
 def load_dataset(path: str, val_fraction: float, seed: int):
+    """Load an .npz dataset and split into train/val.
+
+    When the dataset carries game-group ids `G` (written by build_dataset.py),
+    the holdout is by **whole game**, not by individual position: consecutive
+    positions in a game are one move apart and highly correlated, so a
+    per-position split leaks near-duplicates across train/val and flatters
+    val_loss. Splitting by game keeps a game entirely on one side. Datasets
+    without `G` (older builds) fall back to the per-position split.
+    """
     data = np.load(path)
     X, P, V = data["X"], data["P"], data["V"]
     n = len(V)
     rng = np.random.default_rng(seed)
-    perm = rng.permutation(n)
-    n_val = max(1, int(n * val_fraction))
-    val_idx, train_idx = perm[:n_val], perm[n_val:]
+    if "G" in data.files:
+        groups = data["G"]
+        unique = np.unique(groups)
+        unique = unique[rng.permutation(len(unique))]
+        n_val_groups = max(1, int(len(unique) * val_fraction))
+        is_val = np.isin(groups, unique[:n_val_groups])
+        val_idx = np.nonzero(is_val)[0]
+        train_idx = np.nonzero(~is_val)[0]
+    else:
+        perm = rng.permutation(n)
+        n_val = max(1, int(n * val_fraction))
+        val_idx, train_idx = perm[:n_val], perm[n_val:]
     to_mx = lambda a: mx.array(a)
     train = (to_mx(X[train_idx]), to_mx(P[train_idx]), to_mx(V[train_idx]))
     val = (to_mx(X[val_idx]), to_mx(P[val_idx]), to_mx(V[val_idx]))

@@ -50,9 +50,18 @@ def generate_game(
     softmax_temp_cp: float,
     play_temp: float,
     rng: random.Random,
+    game_id: int | None = None,
 ) -> list[dict]:
     board = chess.Board()
     records = []
+    # Tag every position with the game it came from so the training split can
+    # hold out *whole games* rather than individual positions. Consecutive
+    # positions in one game are one move apart and highly correlated, so a
+    # per-position split leaks near-duplicates across train/val and makes
+    # val_loss look better than it is. A random per-game id (unique within a
+    # data file) lets build_dataset/load_dataset group by game.
+    if game_id is None:
+        game_id = rng.getrandbits(63)
 
     for ply in range(max_plies):
         if board.is_game_over(claim_draw=True):
@@ -85,6 +94,7 @@ def generate_game(
                 "moves_uci": [m.uci() for m in moves],
                 "probs": probs,
                 "value": cp_to_value(cps[0]),
+                "game_id": game_id,
             }
         )
 

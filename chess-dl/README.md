@@ -18,9 +18,14 @@ minimal UCI wrapper around the student model.
    target (softmax over their centipawn scores) and the best move's eval as a
    value target in `[-1, 1]`. Output: JSONL.
 2. **`build_dataset.py`** — encodes JSONL positions into dense tensors
-   (`X`: 8x8x17 board planes, `P`: 4096-way policy target, `V`: scalar value)
-   and saves a `.npz` shard. Board/move encoding lives in `encoding.py` and is
-   framework-agnostic (plain NumPy).
+   (`X`: 8x8x17 board planes, `P`: 4096-way policy target, `V`: scalar value,
+   `G`: per-position game-group id) and saves a `.npz` shard. Positions are
+   **de-duplicated** (fixed-teacher self-play revisits the same openings —
+   ~1.6x duplication measured — and the targets are identical, so duplicates
+   add no signal but would leak the exact same position into both train and
+   val). `G` records which game each position came from so training can hold
+   out *whole games* rather than individual (correlated) positions. Board/move
+   encoding lives in `encoding.py` and is framework-agnostic (plain NumPy).
 3. **`train.py`** — trains `ChessNet` (`model.py`, MLX) on the `.npz` dataset
    with a combined cross-entropy (policy) + MSE (value) loss.
 4. **`evaluate.py`** — plays the student against Stockfish at a capped
@@ -86,24 +91,50 @@ instead of starting over.
 `auto_pipeline.py` is the script to background and forget. It runs the whole
 loop end to end — generate self-play data, train to a plateau, generate more
 data, train again — climbing an **Elo ladder** against Stockfish as it goes,
-and stops once it either reaches the top rung or genuinely stops improving:
+and stops once it either reaches the top rung or genuinely stops improving.
+
+**Recommended command (copy-paste).** Self-contained — run it from the repo
+root. It backgrounds the run and tails the round-level log; the tuned
+defaults below are the ones to start from:
 
 ```bash
-python auto_pipeline.py --data-path ../data/self_play.jsonl --out-dir ../checkpoints/auto \
-    --channels 64 --blocks 4 --games-per-round 200 --depth 10 \
-    --patience 40 --round-patience 5 \
-    --sf-elo-start 1350 --sf-elo-step 100 --sf-elo-max 2400 &
+cd chess-dl/src && source ../../venv/bin/activate
+
+python auto_pipeline.py \
+    --data-path ../data/self_play.jsonl --out-dir ../checkpoints/auto \
+    --channels 64 --blocks 4 \
+    --games-per-round 200 --depth 10 --multipv 5 \
+    --patience 10 --round-patience 5 \
+    --lr 1e-3 --lr-decay 0.9 --min-lr 2e-4 --weight-decay 1e-4 \
+    --sf-elo-start 1350 --sf-elo-step 100 --sf-elo-max 2400 \
+    > ../checkpoints/auto_pipeline.out 2>&1 &
 
 tail -f ../checkpoints/auto/rounds.csv   # one line per round: Elo rung + strength trend
-tail -f ../checkpoints/auto/log.csv      # one line per epoch: training detail within a round
+# tail -f ../checkpoints/auto/log.csv    # one line per epoch: training detail within a round
 ```
+
+This reuses whatever is already in `../data/self_play.jsonl` (it gets
+re-encoded and de-duplicated at the start of round 1, so a previous run's data
+is picked up automatically) and starts training a fresh model on it. To
+instead **resume the model** from a previous run's checkpoint rather than
+retraining from scratch, add `--init-from ../checkpoints/auto/best.npz`.
+
+Watch the first few rows of `rounds.csv`: with the fixes above, `best_val_loss`
+should stop climbing round-to-round and `round_eval_elo_gap` should trend up
+(less negative) instead of sliding — the earlier symptom was both going the
+wrong way every round.
 
 It's two nested early-stopping loops:
 
 - **Inner (per round, epochs):** trains on the data accumulated so far,
   gated on **validation loss** — cheap to compute every epoch, and a good
   proxy for "still learning from this dataset." Stops after `--patience`
-  epochs without a `--min-delta` improvement.
+  epochs without a `--min-delta` improvement. The validation set is held out
+  **by whole game** (see `build_dataset.py`'s `G` groups), so val_loss isn't
+  flattered by near-duplicate positions from the same game landing in both
+  splits. Because each round warm-starts from an already-fit model, the best
+  checkpoint is reached within the first few epochs — so `--patience` is kept
+  small (default 10); a large value just burns epochs overfitting.
 - **Outer (across rounds):** after each round, plays `--round-eval-games`
   games against Stockfish at the *current Elo rung* and compares the result
   to previous rounds at that same rung. This — not validation loss — gates
@@ -132,19 +163,28 @@ capacity-limited (try bumping `--channels`/`--blocks` and resuming with
 `--init-from`); or **(c)** `--max-rounds` as a backstop.
 
 Data accumulates in `--data-path` (appended every round, like
-`generate_data.py` does on its own) and gets fully re-encoded into
-`../checkpoints/auto/dataset.npz` each round, so later rounds train on all
-self-play data generated so far. The model and optimizer stay in memory
-across rounds — each round warm-starts from exactly where the previous
-round's best checkpoint left off, so nothing is manually re-triggered
-between rounds. `best.npz` is always the best checkpoint from the
+`generate_data.py` does on its own) and gets fully re-encoded (and
+de-duplicated) into `../checkpoints/auto/dataset.npz` each round, so later
+rounds train on all self-play data generated so far. The **model** stays in
+memory across rounds — each round warm-starts from exactly where the previous
+round's best checkpoint left off — but the **optimizer is rebuilt fresh each
+round**, with a learning rate that decays across rounds (`--lr-decay`, floored
+at `--min-lr`) and AdamW weight decay (`--weight-decay`). That combination is
+what keeps the loop from slowly regressing: at each round's end the model is
+rolled back to its *best* weights, so carrying stale Adam momentum (which
+describes the later, over-fit weights) onto them would nudge the next round
+off the good minimum and compound every round. A fresh, decayed-LR optimizer
+keeps momentum matched to the weights it's training and damps the immediate
+per-round overfitting. `best.npz` is always the best checkpoint from the
 most-recently-completed round (what you want for
 `evaluate.py`/`uci_engine.py`); `latest.npz` is the most recent epoch,
 useful for resuming with `--init-from` if you kill the run early.
 
 `--games-per-round`, `--depth`, etc. are `generate_data.py`'s knobs, passed
 straight through and reused every round; `--patience`/`--min-delta`/
-`--eval-every` control the inner loop (same meaning as in `auto_train.py`);
+`--eval-every` control the inner loop (same meaning as in `auto_train.py`),
+and `--lr`/`--lr-decay`/`--min-lr`/`--weight-decay` control the per-round
+optimizer (learning-rate schedule across rounds + AdamW regularization);
 `--round-patience`/`--round-min-delta`/`--round-eval-games`/`--max-rounds`/
 `--sf-elo-start`/`--sf-elo-step`/`--sf-elo-max`/`--promotion-score` control
 the outer loop and the Elo ladder.

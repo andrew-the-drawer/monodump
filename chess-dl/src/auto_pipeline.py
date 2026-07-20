@@ -31,10 +31,21 @@ isn't itself a "stall") — otherwise a level-up would look identical to a
 plateau, since score legitimately drops back down against a harder
 opponent.
 
-The model and optimizer are kept in memory across rounds (not reloaded from
-disk), so each round warm-starts training from exactly where the previous
-round's best checkpoint left off — this is the automated version of the
-"generate more data, resume with --init-from" loop described in the README.
+The *model* is kept in memory across rounds (not reloaded from disk), so each
+round warm-starts training from exactly where the previous round's best
+checkpoint left off — this is the automated version of the "generate more
+data, resume with --init-from" loop described in the README.
+
+The *optimizer*, by contrast, is rebuilt fresh at the start of every round
+(with a per-round-decayed learning rate). This is deliberate: at the end of a
+round we roll the model back to that round's *best* weights (step 4), but the
+Adam moment estimates left in the optimizer describe the *latest*, over-fit
+weights from `--patience` epochs later. Carrying that stale momentum onto the
+rolled-back weights nudges the next round off the good minimum on its very
+first steps, and the error compounds every round — a slow regression rather
+than a plateau. A fresh optimizer each round keeps momentum matched to the
+weights it is actually training. AdamW (decoupled weight decay) plus the LR
+decay further damp the immediate per-round overfitting.
 
 Data accumulates: `--data-path` is appended to every round (like
 generate_data.py does on its own) and the full file is re-encoded into
@@ -91,7 +102,10 @@ def main():
     # model / inner (per-round) training loop
     ap.add_argument("--out-dir", default="../checkpoints/auto")
     ap.add_argument("--batch-size", type=int, default=256)
-    ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--lr", type=float, default=1e-3, help="round-1 learning rate; decayed by --lr-decay each subsequent round")
+    ap.add_argument("--lr-decay", type=float, default=0.9, help="per-round multiplier on --lr for warm-started fine-tuning (round r uses lr * lr_decay**(r-1), floored at --min-lr)")
+    ap.add_argument("--min-lr", type=float, default=2e-4, help="floor for the per-round decayed learning rate")
+    ap.add_argument("--weight-decay", type=float, default=1e-4, help="AdamW decoupled weight decay (regularization against the immediate per-round overfitting)")
     ap.add_argument("--channels", type=int, default=64)
     ap.add_argument("--blocks", type=int, default=4)
     ap.add_argument("--value-weight", type=float, default=1.0)
@@ -99,7 +113,7 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--init-from", default=None, help="warm-start round 1 from an existing checkpoint")
     ap.add_argument("--max-epochs-per-round", type=int, default=100_000)
-    ap.add_argument("--patience", type=int, default=40)
+    ap.add_argument("--patience", type=int, default=10, help="epochs without a --min-delta val_loss gain before ending a round; the best checkpoint is reached in the first few warm-started epochs, so a large value just burns epochs overfitting")
     ap.add_argument("--min-delta", type=float, default=5e-4)
     ap.add_argument("--eval-every", type=int, default=25, help="epochs between in-round Stockfish checks (0=off)")
     ap.add_argument("--eval-games", type=int, default=12)
@@ -130,7 +144,9 @@ def main():
     if args.init_from:
         model.load_weights(args.init_from)
     mx.eval(model.parameters())
-    optimizer = optim.Adam(learning_rate=args.lr)
+    # The optimizer is (re)built per round inside the loop; see the module
+    # docstring for why it must not persist across rounds. loss_and_grad only
+    # closes over the model, so it is built once here.
     loss_and_grad = nn.value_and_grad(model, loss_fn)
 
     epoch_log_is_new = not epoch_log_path.exists()
@@ -177,6 +193,7 @@ def main():
                         softmax_temp_cp=args.softmax_temp_cp,
                         play_temp=args.play_temp,
                         rng=rng,
+                        game_id=rng.getrandbits(63),  # unique per game -> whole-game train/val holdout
                     )
                     for r in records:
                         f.write(json.dumps(r) + "\n")
@@ -184,7 +201,9 @@ def main():
                 f.flush()
 
             # 2. rebuild the full dataset from all accumulated data so far
-            X, P, V = encode_jsonl_files([str(data_path)])
+            # (de-duplicated by position; G groups positions by game so the
+            # split below can hold out whole games — see build_dataset.py).
+            X, P, V, G = encode_jsonl_files([str(data_path)])
             # Guardrail: the policy loss is a soft-target cross-entropy, which
             # is only bounded (>= 0) when every target row sums to 1. An
             # un-normalized row lets training drive the logits to +/-inf and
@@ -200,15 +219,21 @@ def main():
                     "Un-normalized soft targets make the policy loss diverge -- "
                     "check build_dataset.encode_jsonl_files."
                 )
-            np.savez_compressed(dataset_path, X=X, P=P, V=V)
+            np.savez_compressed(dataset_path, X=X, P=P, V=V, G=G)
             (Xtr, Ptr, Vtr), (Xval, Pval, Vval) = load_dataset(str(dataset_path), args.val_fraction, args.seed)
             print(
-                f"== round {round_idx}: +{positions_added} positions (total {len(V)}) "
+                f"== round {round_idx}: +{positions_added} positions "
+                f"(total {len(V)} unique, {len(np.unique(G))} game-groups) "
                 f"train={Xtr.shape[0]} val={Xval.shape[0]}",
                 flush=True,
             )
 
-            # 3. train to plateau on this dataset, warm-started from the running model
+            # 3. train to plateau on this dataset, warm-started from the running
+            # model but with a FRESH optimizer (see module docstring) whose
+            # learning rate is decayed for later, fine-tuning rounds.
+            round_lr = max(args.min_lr, args.lr * (args.lr_decay ** (round_idx - 1)))
+            optimizer = optim.AdamW(learning_rate=round_lr, weight_decay=args.weight_decay)
+            print(f"== round {round_idx}: lr={round_lr:.2e} weight_decay={args.weight_decay:g}", flush=True)
             result = train_until_plateau(
                 model,
                 optimizer,
