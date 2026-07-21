@@ -119,6 +119,8 @@ def main():
     ap.add_argument("--eval-games", type=int, default=12)
     ap.add_argument("--sf-movetime-ms", type=int, default=100)
     ap.add_argument("--no-value-lookahead", action="store_true")
+    ap.add_argument("--mcts-sims", type=int, default=0, help="PUCT simulations per move during Stockfish eval (0=off; used for both in-round and end-of-round checks)")
+    ap.add_argument("--c-puct", type=float, default=1.5, help="MCTS exploration constant")
     # outer (across-rounds) loop + Elo curriculum
     ap.add_argument("--max-rounds", type=int, default=1000, help="hard backstop, not the expected stop condition")
     ap.add_argument("--round-patience", type=int, default=5, help="rounds without progress at the current Elo rung before stopping")
@@ -261,6 +263,8 @@ def main():
                 log_file=epoch_log,
                 start_epoch=next_epoch,
                 round_label=round_idx,
+                mcts_sims=args.mcts_sims,
+                c_puct=args.c_puct,
             )
             next_epoch = result["next_epoch"]
 
@@ -273,7 +277,8 @@ def main():
             model.load_weights(str(best_path))
             model.eval()
             round_score, round_elo_gap, round_results = run_strength_eval(
-                model, args.stockfish, elo_used, args.sf_movetime_ms, args.round_eval_games, not args.no_value_lookahead
+                model, args.stockfish, elo_used, args.sf_movetime_ms, args.round_eval_games,
+                not args.no_value_lookahead, args.mcts_sims, args.c_puct,
             )
 
             round_dt = time.time() - round_t0

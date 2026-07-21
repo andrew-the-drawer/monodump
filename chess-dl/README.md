@@ -30,7 +30,8 @@ minimal UCI wrapper around the student model.
    with a combined cross-entropy (policy) + MSE (value) loss.
 4. **`evaluate.py`** — plays the student against Stockfish at a capped
    `UCI_Elo` and reports W/D/L plus a rough Elo-gap estimate, so you can track
-   whether the student is actually improving.
+   whether the student is actually improving. `--mcts-sims N` plays with PUCT
+   search instead of raw policy (see "Move selection" below).
 5. **`auto_train.py`** — unattended version of `train.py`: keeps training
    epochs with early stopping (on validation loss) instead of a fixed epoch
    count, checkpointing the best model as it goes and periodically running a
@@ -47,6 +48,32 @@ Move encoding is `from_square * 64 + to_square` (4096 classes) with the board
 always oriented to the side to move; under-promotions collapse to the queen-
 promotion class (the model always promotes to queen — a documented v1
 limitation, see below).
+
+### Move selection (`play.py`)
+
+The same net supports three strengths of play, cheapest first — all share the
+`--no-value-lookahead` / `--mcts-sims` flags across `evaluate.py`,
+`auto_train.py`, `auto_pipeline.py`, and `uci_engine.py`:
+
+1. **Greedy policy** (`--no-value-lookahead`) — play the policy head's argmax
+   legal move. One net call, no lookahead.
+2. **1-ply value lookahead** (default) — evaluate the policy's top-K
+   candidates with the value head and keep the one the opponent likes least.
+   One extra batched net call, no tree.
+3. **PUCT search** (`--mcts-sims N`, e.g. `200`–`800`) — AlphaZero-style
+   Monte-Carlo tree search: the **policy head** supplies the priors that steer
+   which moves get explored, the **value head** evaluates the leaves (no random
+   rollouts), and the move actually played is the **most-visited** root child —
+   the one that survived deeper scrutiny. This looks several plies deep along
+   the lines that matter, so it catches the tactical blunders that one-shot
+   policy play (1 and 2) makes, which is what caps a distilled policy net's
+   strength well below its teacher. Cost is one net call per simulation
+   (~1–3 ms each here), so `--mcts-sims` is a direct speed↔strength knob and
+   `--c-puct` (default 1.5) trades exploration against exploitation.
+
+Selection order: `--mcts-sims > 0` runs PUCT; otherwise `--no-value-lookahead`
+picks between 1 and 2. The PUCT formula and tree logic are documented in
+`play.py`'s `run_mcts`.
 
 ## Setup
 
@@ -79,6 +106,11 @@ python train.py --data ../data/dataset.npz --epochs 20 --batch-size 256 \
 # 4. Check strength against a rating-limited Stockfish.
 python evaluate.py --checkpoint ../checkpoints/chessnet.npz \
     --channels 64 --blocks 4 --games 20 --sf-elo 1350
+
+# 4b. Same, but play with PUCT search — expect a large strength jump over the
+#     raw policy net (this is the biggest single lever for playing strength).
+python evaluate.py --checkpoint ../checkpoints/chessnet.npz \
+    --channels 64 --blocks 4 --games 20 --sf-elo 1350 --mcts-sims 400
 ```
 
 Repeat 1–4 with more games / higher Stockfish depth / a bigger model
@@ -107,6 +139,7 @@ python auto_pipeline.py \
     --patience 10 --round-patience 5 \
     --lr 1e-3 --lr-decay 0.9 --min-lr 2e-4 --weight-decay 1e-4 \
     --sf-elo-start 1350 --sf-elo-step 100 --sf-elo-max 2400 \
+    --mcts-sims 400 \
     > ../checkpoints/auto_pipeline.out 2>&1 &
 
 tail -f ../checkpoints/auto/rounds.csv   # one line per round: Elo rung + strength trend
@@ -123,6 +156,13 @@ Watch the first few rows of `rounds.csv`: with the fixes above, `best_val_loss`
 should stop climbing round-to-round and `round_eval_elo_gap` should trend up
 (less negative) instead of sliding — the earlier symptom was both going the
 wrong way every round.
+
+Add `--mcts-sims 400` to evaluate each round's strength *with* PUCT search
+(see "Move selection" above). This is slower per round but measures the
+strength you'll actually deploy with on Lichess, and — because the outer loop's
+Elo-ladder promotion is gated on that score — lets the curriculum climb rungs
+the raw policy net can't clear on its own. Leave it off for the fastest rounds
+if you only care about the training-loss trend.
 
 It's two nested early-stopping loops:
 
@@ -229,11 +269,14 @@ calls would need a PyTorch port; `encoding.py`, `generate_data.py`, and
      protocol: "uci"
      working_dir: "/Users/trung/Documents/personal/monodump/chess-dl/src"
      interpreter: "/Users/trung/Documents/personal/monodump/venv/bin/python"
-     interpreter_options: "uci_engine.py --checkpoint ../checkpoints/auto/best.npz --channels 64 --blocks 4"
+     interpreter_options: "uci_engine.py --checkpoint ../checkpoints/auto/best.npz --channels 64 --blocks 4 --mcts-sims 400"
    ```
    (Exact key names/nesting depend on the lichess-bot version — check its
    `config.yml.default` template. The key point: it needs to invoke the repo
-   venv's Python running `uci_engine.py` with the right `--checkpoint`.)
+   venv's Python running `uci_engine.py` with the right `--checkpoint`.
+   `--mcts-sims 400` makes it play with PUCT search — strongly recommended for
+   real games; raise it for more strength at the cost of slower moves, or drop
+   it for the faster raw-policy play.)
 5. **Run it**: `python lichess-bot.py` (from inside the lichess-bot repo,
    its own venv). It will accept challenges / enter tournaments per its
    config.
@@ -244,9 +287,6 @@ gets plugged in.
 
 ## Known v1 limitations
 
-- Move selection is greedy policy + a cheap 1-ply value-head lookahead over
-  the top candidates (`play.py`), not real search (no MCTS/alpha-beta). This
-  caps strength well below Stockfish regardless of net quality.
 - Under-promotions (to knight/bishop/rook) are never produced; always queen.
 - No opening book / endgame tablebase — everything is learned from the
   teacher's shallow-depth self-play data.

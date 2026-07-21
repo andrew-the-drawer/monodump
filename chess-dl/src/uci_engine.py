@@ -28,6 +28,8 @@ def main():
     ap.add_argument("--channels", type=int, default=64)
     ap.add_argument("--blocks", type=int, default=4)
     ap.add_argument("--no-value-lookahead", action="store_true")
+    ap.add_argument("--mcts-sims", type=int, default=0, help="PUCT simulations per move (0=off; recommended for real play, e.g. 200-800)")
+    ap.add_argument("--c-puct", type=float, default=1.5, help="MCTS exploration constant")
     args = ap.parse_args()
 
     model = ChessNet(channels=args.channels, num_blocks=args.blocks)
@@ -70,7 +72,7 @@ def main():
                 for uci_move in rest[1:]:
                     board.push_uci(uci_move)
         elif cmd == "go":
-            move = select_move(model, board, use_value=use_value)
+            move = select_move(model, board, use_value=use_value, mcts_sims=args.mcts_sims, c_puct=args.c_puct)
             send(f"bestmove {move.uci()}")
         elif cmd in ("quit", "stop"):
             if cmd == "quit":

@@ -20,12 +20,20 @@ def score_to_elo_diff(score: float) -> float:
     return -400.0 * math.log10(1.0 / score - 1.0)
 
 
-def play_game(model, engine: chess.engine.SimpleEngine, student_is_white: bool, sf_limit, use_value: bool) -> str:
+def play_game(
+    model,
+    engine: chess.engine.SimpleEngine,
+    student_is_white: bool,
+    sf_limit,
+    use_value: bool,
+    mcts_sims: int = 0,
+    c_puct: float = 1.5,
+) -> str:
     board = chess.Board()
     while not board.is_game_over(claim_draw=True):
         student_to_move = (board.turn == chess.WHITE) == student_is_white
         if student_to_move:
-            move = select_move(model, board, use_value=use_value)
+            move = select_move(model, board, use_value=use_value, mcts_sims=mcts_sims, c_puct=c_puct)
         else:
             result = engine.play(board, sf_limit)
             move = result.move
@@ -47,6 +55,8 @@ def main():
     ap.add_argument("--sf-elo", type=int, default=1350, help="Stockfish UCI_Elo target (min ~1320)")
     ap.add_argument("--sf-movetime-ms", type=int, default=100)
     ap.add_argument("--no-value-lookahead", action="store_true")
+    ap.add_argument("--mcts-sims", type=int, default=0, help="PUCT simulations per move (0=off, use policy+1-ply value lookahead instead)")
+    ap.add_argument("--c-puct", type=float, default=1.5, help="MCTS exploration constant (higher=more exploration)")
     args = ap.parse_args()
 
     model = ChessNet(channels=args.channels, num_blocks=args.blocks)
@@ -61,7 +71,10 @@ def main():
     try:
         for g in range(args.games):
             student_is_white = g % 2 == 0
-            outcome = play_game(model, engine, student_is_white, sf_limit, use_value=not args.no_value_lookahead)
+            outcome = play_game(
+                model, engine, student_is_white, sf_limit,
+                use_value=not args.no_value_lookahead, mcts_sims=args.mcts_sims, c_puct=args.c_puct,
+            )
             results[outcome] += 1
             print(f"game {g + 1}/{args.games}: student={'white' if student_is_white else 'black'} -> {outcome}")
     finally:

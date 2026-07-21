@@ -42,7 +42,7 @@ from model import ChessNet
 from train import iterate_batches, load_dataset, loss_fn
 
 
-def run_strength_eval(model, stockfish_path, sf_elo, sf_movetime_ms, games, use_value):
+def run_strength_eval(model, stockfish_path, sf_elo, sf_movetime_ms, games, use_value, mcts_sims=0, c_puct=1.5):
     engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
     engine.configure({"UCI_LimitStrength": True, "UCI_Elo": sf_elo})
     limit = chess.engine.Limit(time=sf_movetime_ms / 1000.0)
@@ -50,7 +50,7 @@ def run_strength_eval(model, stockfish_path, sf_elo, sf_movetime_ms, games, use_
     try:
         for g in range(games):
             student_is_white = g % 2 == 0
-            outcome = play_game(model, engine, student_is_white, limit, use_value)
+            outcome = play_game(model, engine, student_is_white, limit, use_value, mcts_sims=mcts_sims, c_puct=c_puct)
             results[outcome] += 1
     finally:
         engine.quit()
@@ -86,6 +86,8 @@ def train_until_plateau(
     log_file,
     start_epoch=1,
     round_label="-",
+    mcts_sims=0,
+    c_puct=1.5,
 ):
     """Train `model` in place until val_loss plateaus.
 
@@ -132,7 +134,7 @@ def train_until_plateau(
         eval_note = ""
         if eval_every > 0 and epoch % eval_every == 0:
             score, elo_gap, results = run_strength_eval(
-                model, stockfish, sf_elo, sf_movetime_ms, eval_games, use_value_lookahead
+                model, stockfish, sf_elo, sf_movetime_ms, eval_games, use_value_lookahead, mcts_sims, c_puct
             )
             eval_score, eval_elo_gap = f"{score:.3f}", f"{elo_gap:.0f}"
             eval_note = f" | vs SF@{sf_elo}: {results} score={score:.2f} elo_gap={elo_gap:+.0f}"
@@ -184,6 +186,8 @@ def main():
     ap.add_argument("--sf-elo", type=int, default=1350)
     ap.add_argument("--sf-movetime-ms", type=int, default=100)
     ap.add_argument("--no-value-lookahead", action="store_true")
+    ap.add_argument("--mcts-sims", type=int, default=0, help="PUCT simulations per move during Stockfish eval (0=off)")
+    ap.add_argument("--c-puct", type=float, default=1.5, help="MCTS exploration constant")
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -237,6 +241,8 @@ def main():
         latest_path=latest_path,
         writer=writer,
         log_file=log_file,
+        mcts_sims=args.mcts_sims,
+        c_puct=args.c_puct,
     )
 
     log_file.close()
