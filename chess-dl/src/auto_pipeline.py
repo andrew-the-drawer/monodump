@@ -131,6 +131,7 @@ def main():
     ap.add_argument("--value-weight", type=float, default=1.0)
     ap.add_argument("--val-fraction", type=float, default=0.1)
     ap.add_argument("--seed", type=int, default=-1, help="self-play RNG seed; <0 (default) = system entropy so restarts don't replay identical games. A fixed seed is reproducible but offset by existing data on resume (see note in code).")
+    ap.add_argument("--split-seed", type=int, default=0, help="separate, always-non-negative seed for the deterministic train/val split (load_dataset uses np.random.default_rng, which rejects negative seeds -- unlike --seed, this one is unrelated to self-play entropy and should just stay fixed across runs/rounds).")
     ap.add_argument("--init-from", default=None, help="warm-start round 1 from an existing checkpoint")
     ap.add_argument("--max-epochs-per-round", type=int, default=100_000)
     ap.add_argument("--patience", type=int, default=10, help="epochs without a --min-delta val_loss gain before ending a round; the best checkpoint is reached in the first few warm-started epochs, so a large value just burns epochs overfitting")
@@ -274,7 +275,7 @@ def main():
                     "check build_dataset.encode_jsonl_files."
                 )
             np.savez_compressed(dataset_path, X=X, P=P, V=V, G=G)
-            (Xtr, Ptr, Vtr), (Xval, Pval, Vval) = load_dataset(str(dataset_path), args.val_fraction, args.seed)
+            (Xtr, Ptr, Vtr), (Xval, Pval, Vval) = load_dataset(str(dataset_path), args.val_fraction, args.split_seed)
             print(
                 f"== round {round_idx}: +{positions_added} positions "
                 f"(total {len(V)} unique, {len(np.unique(G))} game-groups) "
