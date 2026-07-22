@@ -30,6 +30,7 @@ the search is almost free to bolt on. See `run_mcts` for the formula.
 from __future__ import annotations
 
 import math
+import random
 
 import chess
 import mlx.core as mx
@@ -131,6 +132,8 @@ def run_mcts(
     board: chess.Board,
     sims: int,
     c_puct: float = 1.5,
+    temperature: float = 0.0,
+    rng: random.Random | None = None,
 ) -> chess.Move:
     """PUCT Monte-Carlo tree search over the policy+value net.
 
@@ -150,8 +153,17 @@ def run_mcts(
          it each ply (a position good for one side is bad for the other).
 
     Returns the most-visited root move — the one search kept coming back to,
-    which is more robust than the single-highest-Q move. `c_puct` trades
-    exploration (higher) against exploitation (lower).
+    which is more robust than the single-highest-Q move — when `temperature`
+    is 0 (the default, used for evaluation/play). When `temperature` > 0, it
+    instead *samples* a move with probability proportional to
+    `visit_count ** (1 / temperature)`, using `rng` (a `random.Random`, for
+    reproducibility with the rest of the self-play pipeline's seeding; falls
+    back to the `random` module if not given). Used by `generate_data.py`'s
+    on-policy self-play, which needs the student to explore different lines
+    across games rather than deterministically replaying the same one every
+    time. `c_puct` trades search exploration (higher) against exploitation
+    (lower); `temperature` is a separate, orthogonal exploration knob over the
+    search's *output*.
     """
     root = _Node(prior=1.0)
     _, legal_moves, priors = policy_value(model, board)
@@ -185,7 +197,12 @@ def run_mcts(
         for _ in range(len(path) - 1):
             board.pop()
 
-    return max(root.children.items(), key=lambda kv: kv[1].visit_count)[0]
+    if temperature <= 0:
+        return max(root.children.items(), key=lambda kv: kv[1].visit_count)[0]
+
+    moves = list(root.children.keys())
+    weights = [root.children[m].visit_count ** (1.0 / temperature) for m in moves]
+    return (rng or random).choices(moves, weights=weights)[0]
 
 
 def select_move(
@@ -195,14 +212,31 @@ def select_move(
     top_k: int = 8,
     mcts_sims: int = 0,
     c_puct: float = 1.5,
+    temperature: float = 0.0,
+    rng: random.Random | None = None,
 ) -> chess.Move:
     """Choose a move for `board`. If `mcts_sims > 0`, run PUCT search;
     otherwise fall back to greedy policy (`use_value=False`) or the 1-ply
-    value lookahead (`use_value=True`). See the module docstring."""
+    value lookahead (`use_value=True`). See the module docstring.
+
+    `temperature` (0 by default, deterministic) sample-weights the choice
+    instead of always taking the single best move: with MCTS it samples by
+    visit count (see `run_mcts`), without MCTS it samples the top-`top_k`
+    policy candidates by their softmax probability. This is only for
+    self-play data generation (`generate_data.py`), where a deterministic
+    student would replay the same game every time; `evaluate.py` and
+    `uci_engine.py` leave it at 0 for their strongest, deterministic play.
+    """
     if mcts_sims > 0:
-        return run_mcts(model, board, mcts_sims, c_puct)
+        return run_mcts(model, board, mcts_sims, c_puct, temperature=temperature, rng=rng)
 
     probs, legal_idx, legal_moves = policy_probs(model, board)
+
+    if temperature > 0 and len(legal_moves) > 1:
+        order = np.argsort(-probs[legal_idx])[: min(top_k, len(legal_idx))]
+        candidates = [legal_moves[i] for i in order]
+        weights = [probs[legal_idx[i]] ** (1.0 / temperature) for i in order]
+        return (rng or random).choices(candidates, weights=weights)[0]
 
     if not use_value or len(legal_moves) == 1:
         best_idx = legal_idx[int(np.argmax(probs[legal_idx]))]

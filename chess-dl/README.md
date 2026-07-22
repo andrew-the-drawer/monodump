@@ -12,11 +12,17 @@ minimal UCI wrapper around the student model.
 
 ## How it works
 
-1. **`generate_data.py`** — Stockfish plays itself (a few random opening
-   plies, then temperature-sampled self-play afterwards for diversity). At
-   each position we record Stockfish's top-K moves (MultiPV) as a soft policy
-   target (softmax over their centipawn scores) and the best move's eval as a
-   value target in `[-1, 1]`. Output: JSONL.
+1. **`generate_data.py`** — Stockfish always **labels** every position (its
+   top-K moves via MultiPV, recorded as a soft policy target — softmax over
+   centipawn scores — plus the best move's eval as a value target in
+   `[-1, 1]`). Who **plays** the moves that decide which positions get
+   labeled is a separate, configurable choice (a few random opening plies
+   either way, for diversity):
+   - **off-policy (default)** — Stockfish plays both sides, temperature-
+     sampled afterwards so it doesn't just replay one line every game.
+   - **on-policy (`--student-checkpoint`)** — the student itself plays both
+     sides instead (optionally with MCTS/value lookahead). See "On-policy
+     self-play" below for why this matters. Output: JSONL either way.
 2. **`build_dataset.py`** — encodes JSONL positions into dense tensors
    (`X`: 8x8x17 board planes, `P`: 4096-way policy target, `V`: scalar value,
    `G`: per-position game-group id) and saves a `.npz` shard. Positions are
@@ -75,6 +81,44 @@ Selection order: `--mcts-sims > 0` runs PUCT; otherwise `--no-value-lookahead`
 picks between 1 and 2. The PUCT formula and tree logic are documented in
 `play.py`'s `run_mcts`.
 
+### On-policy self-play (`generate_data.py` / `auto_pipeline.py`)
+
+Plain distillation trains the student only on positions Stockfish itself
+would visit playing well. But at deployment the student plays its *own*
+moves — the moment it makes a small error, it drifts onto a position type
+under-represented in that training data, has no signal for how to respond,
+and is more likely to err again. This is the standard covariate-shift
+problem in behavioral cloning/imitation learning: train-time and test-time
+state distributions diverge, and the gap is worst exactly when the student
+is weakest.
+
+The fix is **DAgger** (Dataset Aggregation — Ross, Gordon & Bagnell, 2011,
+[arXiv:1011.0686](https://arxiv.org/abs/1011.0686)): let the *learner*
+choose which states to visit, and keep the *expert* only for labeling them.
+Concretely here: the student (optionally driven by MCTS/value lookahead, the
+same move-selection code `evaluate.py` uses) plays both sides of the
+self-play game, while Stockfish still analyses and labels every position
+reached, exactly as before. The dataset then matches what the student
+actually encounters at play time — including the positions its own mistakes
+lead it into — instead of only the positions a flawless teacher would reach.
+
+- `generate_data.py --student-checkpoint <path>` turns this on for a
+  standalone run (`--student-temp`/`--mcts-sims`/`--c-puct`/
+  `--no-value-lookahead` control how the student plays, same meaning as
+  `evaluate.py`).
+- `auto_pipeline.py --on-policy-from-round N` (default 2) turns this on
+  automatically starting at round `N`, using the in-memory model straight
+  from the previous round's best checkpoint — no separate checkpoint path
+  needed. Round 1 always uses Stockfish self-play, since a freshly
+  initialized (or still-weak, freshly warm-started) student has nothing
+  useful to play yet; this mirrors DAgger's own first iteration, which is
+  pure expert rollout. Set it to `1` to skip the bootstrap round entirely,
+  e.g. when resuming `--init-from` an already-decent checkpoint.
+- `--student-play-temp` (auto_pipeline) / `--student-temp` (generate_data)
+  samples the student's move instead of always taking its single best one
+  (by MCTS visit count, or by policy softmax without MCTS) — needed because a
+  fully deterministic student would replay the exact same game every round.
+
 ## Setup
 
 Stockfish and the Python deps are already installed into the shared repo
@@ -92,9 +136,16 @@ source venv/bin/activate
 All commands below assume `cd chess-dl/src && source ../../venv/bin/activate`.
 
 ```bash
-# 1. Generate data (Stockfish self-play). Start small, scale up once it works.
+# 1. Generate data (off-policy: Stockfish self-play). Start small, scale up
+#    once it works.
 python generate_data.py --games 200 --depth 10 --multipv 5 \
     --out ../data/games_001.jsonl
+
+# 1b. Once you have a checkpoint, generate on-policy data instead (student
+#     plays, Stockfish still labels) — see "On-policy self-play" above.
+python generate_data.py --games 200 --depth 10 --multipv 5 \
+    --out ../data/games_002.jsonl \
+    --student-checkpoint ../checkpoints/chessnet.npz --mcts-sims 400
 
 # 2. Build a training set from one or more JSONL shards.
 python build_dataset.py ../data/games_001.jsonl --out ../data/dataset.npz
@@ -113,10 +164,11 @@ python evaluate.py --checkpoint ../checkpoints/chessnet.npz \
     --channels 64 --blocks 4 --games 20 --sf-elo 1350 --mcts-sims 400
 ```
 
-Repeat 1–4 with more games / higher Stockfish depth / a bigger model
-(`--channels`, `--blocks`) as the student's strength plateaus. `train.py`
-takes `--init-from` to continue training an existing checkpoint on new data
-instead of starting over.
+Repeat 1(b)–4 with more games / higher Stockfish depth / a bigger model
+(`--channels`, `--blocks`) as the student's strength plateaus, switching to
+1b (on-policy) once a checkpoint exists. `train.py` takes `--init-from` to
+continue training an existing checkpoint on new data instead of starting
+over.
 
 ## Unattended training
 
@@ -125,9 +177,15 @@ loop end to end — generate self-play data, train to a plateau, generate more
 data, train again — climbing an **Elo ladder** against Stockfish as it goes,
 and stops once it either reaches the top rung or genuinely stops improving.
 
-**Recommended command (copy-paste).** Self-contained — run it from the repo
-root. It backgrounds the run and tails the round-level log; the tuned
-defaults below are the ones to start from:
+**Recommended command (copy-paste).** Self-contained — run from the repo root;
+it backgrounds the run and tails the round-level log. Use the first variant for
+a brand-new model, the second to continue an existing run. The tuned flags
+shown are the ones to start from. Both default to **on-policy self-play from
+round 2 onward** (`--on-policy-from-round 2`) — see "On-policy self-play"
+above; `--mcts-sims 400` doubles as both the evaluation *and* the on-policy
+move-selection strength.
+
+**First run (fresh model, from scratch):**
 
 ```bash
 cd chess-dl/src && source ../../venv/bin/activate
@@ -135,7 +193,7 @@ cd chess-dl/src && source ../../venv/bin/activate
 python auto_pipeline.py \
     --data-path ../data/self_play.jsonl --out-dir ../checkpoints/auto \
     --channels 64 --blocks 4 \
-    --games-per-round 200 --depth 10 --multipv 5 \
+    --games-per-round 200 --depth 10 --multipv 5 --opening-random-plies 10 \
     --patience 10 --round-patience 5 \
     --lr 1e-3 --lr-decay 0.9 --min-lr 2e-4 --weight-decay 1e-4 \
     --sf-elo-start 1350 --sf-elo-step 100 --sf-elo-max 2400 \
@@ -146,11 +204,70 @@ tail -f ../checkpoints/auto/rounds.csv   # one line per round: Elo rung + streng
 # tail -f ../checkpoints/auto/log.csv    # one line per epoch: training detail within a round
 ```
 
-This reuses whatever is already in `../data/self_play.jsonl` (it gets
-re-encoded and de-duplicated at the start of round 1, so a previous run's data
-is picked up automatically) and starts training a fresh model on it. To
-instead **resume the model** from a previous run's checkpoint rather than
-retraining from scratch, add `--init-from ../checkpoints/auto/best.npz`.
+**Resuming from an existing checkpoint** (continue a previous run rather than
+retraining from scratch) — the recommended way to keep a run going. It
+warm-starts the model from `best.npz` and keeps extending the same data file
+with *new* games (the entropy-seeded RNG guarantees they aren't replays):
+
+```bash
+python auto_pipeline.py \
+    --data-path ../data/self_play.jsonl --out-dir ../checkpoints/auto \
+    --channels 64 --blocks 4 \
+    --games-per-round 200 --depth 10 --multipv 5 --opening-random-plies 10 \
+    --patience 10 --round-patience 5 \
+    --lr 1e-3 --lr-decay 0.9 --min-lr 2e-4 --weight-decay 1e-4 \
+    --sf-elo-start 1350 --sf-elo-step 100 --sf-elo-max 2400 \
+    --mcts-sims 400 \
+    --init-from ../checkpoints/auto/best.npz \
+    --on-policy-from-round 1 \
+    > ../checkpoints/auto_pipeline.out 2>&1 &
+```
+
+`--on-policy-from-round 1` here skips the bootstrap round: `best.npz` is
+already a real, non-random checkpoint, so there's no reason to spend round 1
+on off-policy Stockfish self-play the way a from-scratch run needs to.
+
+Both reuse whatever is already in `../data/self_play.jsonl` (it gets re-encoded
+and de-duplicated at the start of round 1, so prior data is picked up
+automatically). `--init-from` loads the old weights into memory *before* the
+loop begins, so it's safe even though the run overwrites `best.npz`/`latest.npz`
+as it trains.
+
+**Do I need to delete old checkpoints / data before re-running?** No — and you
+shouldn't delete the data:
+
+- **`self_play.jsonl` — keep it.** Those are real Stockfish-labeled positions;
+  deleting throws away signal. Duplicate lines from earlier fixed-seed runs are
+  harmless (de-dup drops them at encode time), and new rounds now *extend* the
+  file with fresh positions.
+- **`best.npz` / `latest.npz` — keep them.** Warm-starting with `--init-from
+  ../checkpoints/auto/best.npz` (the ~0.40-vs-SF@1350 model) beats starting from
+  random weights. They get overwritten during the run regardless.
+- **`rounds.csv` / `log.csv` — optionally archive them.** The pipeline *appends*
+  to these and restarts its round/epoch counters at 1 each run, so a resumed run
+  tacks new `round 1, 2, …` rows onto the old ones — cosmetically messy but not
+  functionally harmful (the outer-loop patience state is in-memory and resets
+  each run). For a clean strength trend, `mv rounds.csv rounds.prev.csv` (same
+  for `log.csv`) before resuming, or point `--out-dir` at a new folder. Do this
+  when a run's methodology actually changes (e.g. the first run after adding
+  on-policy self-play) so the trend isn't a mix of off-policy and on-policy
+  rounds — the checkpoints and data themselves stay valid across the switch,
+  only the round-by-round comparison gets muddled.
+
+**Self-play RNG (why data now keeps growing across runs).** `generate_game` is
+deterministic given its RNG — the same random opening plies produce the same
+fixed-depth Stockfish replies, the same positions, and even the same
+`game_id`. A *fixed* `--seed` therefore makes a restarted/resumed run replay
+byte-identical games, which `build_dataset` then de-duplicates away, silently
+freezing the dataset (the symptom: `total N unique, M game-groups` never
+changing round-to-round even as `+positions` are "added"). So `--seed` now
+defaults to `<0` = **system entropy**: every run generates genuinely new games.
+Pass an explicit `--seed` only if you want reproducibility — it's still made
+resume-safe by offsetting with the amount of data already on disk, so appends
+continue the sequence rather than repeat it. If you have an old data file
+generated under the previous fixed-seed default, its duplicate lines are
+harmless (de-dup drops them at encode time), but new rounds will now extend it
+with fresh positions.
 
 Watch the first few rows of `rounds.csv`: with the fixes above, `best_val_loss`
 should stop climbing round-to-round and `round_eval_elo_gap` should trend up
@@ -227,7 +344,10 @@ and `--lr`/`--lr-decay`/`--min-lr`/`--weight-decay` control the per-round
 optimizer (learning-rate schedule across rounds + AdamW regularization);
 `--round-patience`/`--round-min-delta`/`--round-eval-games`/`--max-rounds`/
 `--sf-elo-start`/`--sf-elo-step`/`--sf-elo-max`/`--promotion-score` control
-the outer loop and the Elo ladder.
+the outer loop and the Elo ladder; `--on-policy-from-round`/
+`--student-play-temp` (plus the shared `--mcts-sims`/`--c-puct`/
+`--no-value-lookahead`) control on-policy self-play (see "On-policy
+self-play" above).
 
 If you'd rather run the loops separately (e.g. to inspect/curate data or
 manually raise the Elo target between rounds), `generate_data.py` →

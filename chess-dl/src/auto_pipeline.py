@@ -2,6 +2,24 @@
 more data -> repeat, until more data stops helping — climbing an Elo ladder
 against Stockfish as it goes.
 
+**On-policy self-play (`--on-policy-from-round`).** Off-policy distillation
+(Stockfish playing both sides) trains the student only on positions a
+flawless Stockfish would reach, never on positions the student's *own*
+mistakes lead it into -- so at deployment, the first small error drifts it
+onto states it never trained on, and errors compound (the classic
+behavioral-cloning covariate-shift problem; see the DAgger paper referenced
+in README.md). From `--on-policy-from-round` onward, the round's self-play
+games are instead played by the in-memory student itself (optionally with
+MCTS/value lookahead -- same `--mcts-sims`/`--c-puct`/`--no-value-lookahead`
+knobs used for evaluation, `--student-play-temp`-sampled so it doesn't
+replay one line every game); Stockfish still analyses and labels every
+position reached, exactly as before. Round 1 always uses Stockfish self-play
+regardless of this flag, since a freshly-initialized (or freshly-warm-started
+but still weak) student has nothing useful to play yet -- this mirrors
+DAgger's own first iteration, which is pure expert rollout. Set
+`--on-policy-from-round 1` to skip the bootstrap round entirely (e.g. when
+resuming `--init-from` an already-decent checkpoint).
+
 This nests two early-stopping loops:
 
   - **inner, per round** (`auto_train.train_until_plateau`): train epochs on
@@ -94,11 +112,13 @@ def main():
     ap.add_argument("--depth", type=int, default=8)
     ap.add_argument("--multipv", type=int, default=4)
     ap.add_argument("--max-plies", type=int, default=80)
-    ap.add_argument("--opening-random-plies", type=int, default=6)
+    ap.add_argument("--opening-random-plies", type=int, default=8, help="random plies before Stockfish takes over; higher = more diverse openings = more new unique positions per round (counters fixed-teacher diversity saturation)")
     ap.add_argument("--softmax-temp-cp", type=float, default=150.0)
     ap.add_argument("--play-temp", type=float, default=0.7)
     ap.add_argument("--gen-threads", type=int, default=1)
     ap.add_argument("--data-path", default="../data/self_play.jsonl", help="grows across rounds (appended to)")
+    ap.add_argument("--on-policy-from-round", type=int, default=2, help="starting at this round, self-play games are played by the in-memory student (on-policy) instead of Stockfish; Stockfish still labels every position. Round 1 always uses Stockfish self-play (no trained student yet). Set to 1 to go on-policy immediately (e.g. resuming --init-from a decent checkpoint). See module docstring.")
+    ap.add_argument("--student-play-temp", type=float, default=1.0, help="temperature for sampling the student's on-policy move during data generation (0 = deterministic, which would replay the same game every round)")
     # model / inner (per-round) training loop
     ap.add_argument("--out-dir", default="../checkpoints/auto")
     ap.add_argument("--batch-size", type=int, default=256)
@@ -110,7 +130,7 @@ def main():
     ap.add_argument("--blocks", type=int, default=4)
     ap.add_argument("--value-weight", type=float, default=1.0)
     ap.add_argument("--val-fraction", type=float, default=0.1)
-    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--seed", type=int, default=-1, help="self-play RNG seed; <0 (default) = system entropy so restarts don't replay identical games. A fixed seed is reproducible but offset by existing data on resume (see note in code).")
     ap.add_argument("--init-from", default=None, help="warm-start round 1 from an existing checkpoint")
     ap.add_argument("--max-epochs-per-round", type=int, default=100_000)
     ap.add_argument("--patience", type=int, default=10, help="epochs without a --min-delta val_loss gain before ending a round; the best checkpoint is reached in the first few warm-started epochs, so a large value just burns epochs overfitting")
@@ -171,7 +191,24 @@ def main():
 
     gen_engine = chess.engine.SimpleEngine.popen_uci(args.stockfish)
     gen_engine.configure({"Threads": args.gen_threads})
-    rng = random.Random(args.seed)
+
+    # Seed the self-play RNG so we never regenerate games we've already saved.
+    # A *fixed* seed across runs is a trap: generate_game is deterministic given
+    # this RNG (same random opening plies -> same fixed-depth Stockfish replies
+    # -> same positions -> even the same game_id), so a resumed/restarted run
+    # with the same seed replays byte-identical games. build_dataset then
+    # de-duplicates them away, freezing the dataset round after round and
+    # starving training. So: default to system entropy (--seed < 0), and even
+    # when an explicit seed is given for reproducibility, offset it by how much
+    # data is already on disk so a resume *continues* the sequence instead of
+    # repeating it.
+    if args.seed is not None and args.seed >= 0:
+        existing_records = sum(1 for _ in data_path.open()) if data_path.exists() else 0
+        rng = random.Random(f"{args.seed}-{existing_records}")
+        print(f"== self-play RNG: deterministic seed={args.seed}, offset by {existing_records} existing records", flush=True)
+    else:
+        rng = random.Random()
+        print("== self-play RNG: system entropy (non-deterministic; avoids replaying prior games)", flush=True)
 
     current_sf_elo = args.sf_elo_start
     best_gap_at_rung = float("-inf")
@@ -182,7 +219,17 @@ def main():
         for round_idx in range(1, args.max_rounds + 1):
             round_t0 = time.time()
 
-            # 1. generate more self-play data, appended to the same growing file
+            # 1. generate more self-play data, appended to the same growing file.
+            # From --on-policy-from-round onward the student itself plays both
+            # sides (on-policy); Stockfish still labels every position either
+            # way. See module docstring.
+            on_policy = round_idx >= args.on_policy_from_round
+            if on_policy:
+                model.eval()
+            print(
+                f"== round {round_idx}: self-play mode = {'on-policy (student plays)' if on_policy else 'off-policy (Stockfish plays)'}",
+                flush=True,
+            )
             positions_added = 0
             with data_path.open("a") as f:
                 for _ in range(args.games_per_round):
@@ -196,6 +243,11 @@ def main():
                         play_temp=args.play_temp,
                         rng=rng,
                         game_id=rng.getrandbits(63),  # unique per game -> whole-game train/val holdout
+                        student_model=model if on_policy else None,
+                        student_temp=args.student_play_temp,
+                        mcts_sims=args.mcts_sims,
+                        c_puct=args.c_puct,
+                        use_value_lookahead=not args.no_value_lookahead,
                     )
                     for r in records:
                         f.write(json.dumps(r) + "\n")
