@@ -155,3 +155,6 @@ chess-dl/data/*
 !chess-dl/data/.gitkeep
 chess-dl/checkpoints/*
 !chess-dl/checkpoints/.gitkeep
+# drm-poc: packaged media + local DRM state
+drm-poc/packaging/content/
+drm-poc/**/*.db
