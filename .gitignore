@@ -158,3 +158,6 @@ chess-dl/checkpoints/*
 # drm-poc: packaged media + local DRM state
 drm-poc/packaging/content/
 drm-poc/**/*.db
+drm-poc/bin/
+drm-poc/server/*.pem
+drm-poc/server/*.bin

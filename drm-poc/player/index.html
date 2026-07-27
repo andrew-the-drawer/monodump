@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>drm-poc player</title>
+  <script src="https://cdn.jsdelivr.net/npm/shaka-player@4.11.9/dist/shaka-player.compiled.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #111; color: #eee; margin: 2rem; }
+    video { width: 100%; max-width: 960px; background: #000; }
+    #log { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12px;
+           background: #000; color: #6f6; padding: 1rem; max-width: 960px; height: 220px;
+           overflow-y: auto; margin-top: 1rem; }
+    .row { max-width: 960px; display: flex; gap: 1rem; align-items: center; margin: .5rem 0; }
+    select, button { font-size: 14px; padding: .3rem .6rem; }
+    #probe-hint { font-size: 12px; color: #888; }
+  </style>
+</head>
+<body>
+  <h1>drm-poc</h1>
+  <div class="row">
+    <label>Mode:
+      <select id="mode">
+        <option value="clearkey">Phase 2 — ClearKey (insecure)</option>
+        <option value="protocol">Phase 3+ — our license protocol</option>
+      </select>
+    </label>
+    <label>Device:
+      <select id="securityLevel">
+        <option value="SW">SW (no attestation)</option>
+        <option value="TEE">TEE (simulated attestation)</option>
+      </select>
+    </label>
+    <button id="load">Load &amp; play</button>
+    <span id="tier"></span>
+  </div>
+  <div class="row">
+    <button id="probe">Probe real hardware security level</button>
+    <span id="probe-hint">queries the browser's actual platform CDM(s) — separate from our simulated SW/TEE protocol above</span>
+  </div>
+  <video id="video" controls autoplay muted></video>
+  <div id="log"></div>
+  <script src="cdm-bridge.js"></script>
+</body>
+</html>
