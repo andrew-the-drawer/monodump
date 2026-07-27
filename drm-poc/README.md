@@ -9,6 +9,35 @@ attack write-ups.
 **Status: Phases 0–5 implemented.** Phase 6 (real TEE — Secure Enclave /
 OP-TEE) and Phase 7 (attack demo) are not part of this pass.
 
+## Background: what is EME?
+
+**EME (Encrypted Media Extensions)** is the W3C browser API that lets a
+`<video>` element play DRM-protected content without the webpage's own
+JavaScript ever touching the decryption keys. The state machine:
+
+1. `navigator.requestMediaKeySystemAccess(keySystem, configs)` — "can you
+   satisfy `org.w3.clearkey` / `com.widevine.alpha` / etc. with these
+   codecs/robustness requirements?"
+2. `access.createMediaKeys()` → `video.setMediaKeys(mediaKeys)` — binds a CDM
+   (Content Decryption Module) instance to the video element.
+3. Playback hits encrypted segments; the browser fires an `encrypted` event
+   carrying the `pssh`/KID info.
+4. `session.generateRequest()` → the CDM emits a `message` event containing
+   an opaque **license request**.
+5. The page ships that blob to a license server however it likes, gets back
+   a **license response**.
+6. `session.update(response)` → the CDM verifies/unwraps it and starts
+   decrypting.
+
+The point of the whole design: **the page never sees raw keys** — steps 4–6
+pass opaque, CDM-specific bytes back and forth. ClearKey (used for actual
+decode throughout this PoC, per PLAN.md Part 5) is the one standardized
+exception, whose "license" literally is a JSON blob of raw keys — which is
+exactly why it has no security value on its own, and why Phase 3 replaces
+*how the keys get chosen* with our own protocol while still handing the
+result to ClearKey at the end. Full write-up, including the CENC/`pssh`/
+`tenc` box side of the picture: `docs/00-primer.md`.
+
 ## One-time setup
 
 ```bash
@@ -63,6 +92,61 @@ DASH content, and the API — no CORS needed.
   secret and gets all 5 keys, including UHD. Same content, same player,
   different ceiling — **zero client-side gating logic**; the cap is a pure
   consequence of which keys ClearKey was handed.
+- **Device: Auto (detect from real hardware)** — before provisioning, runs
+  the real EME robustness probe (below) against this browser's actual
+  Widevine CDM, maps `HW_*` → request `TEE`, `SW_*`/unavailable → request
+  `SW`, then proceeds exactly as above. It still sends our own simulated
+  attestation secret when it decides to request `TEE` — see the note in
+  `cdm-bridge.js` on `detectRealSecurityLevel()` for why real hardware
+  capability still can't produce real attestation *for our own protocol*
+  without Phase 6.
+- **"Probe real hardware security level" button** — independent of the
+  above, walks `navigator.requestMediaKeySystemAccess` down the real
+  Widevine/PlayReady robustness ladder and logs the highest one this
+  browser's actual platform CDM resolves. This never touches the video
+  element or our protocol; it's a pure diagnostic. See "Local capability vs.
+  real license trust" below before reading too much into its result.
+
+### Local capability vs. real license trust
+
+If this probe reports `HW_SECURE_DECODE`/`HW_SECURE_CRYPTO` on your machine,
+that is **not** the same as "this device is Widevine L1 and a real service
+would give it 4K." `requestMediaKeySystemAccess` resolving for a robustness
+string only means the *local* CDM instance claims it can satisfy that
+config — a client-side capability answer. Whether a real license server
+actually *grants* a license at that level is a separate, server-side
+decision: real Widevine license servers evaluate the device certificate
+embedded in the actual license request (signed by Google, tied to that
+CDM's certification status) before deciding what to hand back — exactly the
+same principle as our own `/license` never trusting a client-claimed
+security level (`docs/01-protocol.md`). A device can locally negotiate a
+robustness level and still get an L3-equivalent license in practice if its
+certificate doesn't back that claim.
+
+**To actually demo real, hardware-enforced Widevine end-to-end** (real
+screenshot/screen-capture masking, real 4K gating, the works), local
+robustness negotiation isn't enough — you'd need:
+
+1. A real Widevine **content partner relationship** — either directly with
+   Google, or (the realistic path for anyone not Netflix-scale) through a
+   multi-DRM SaaS vendor (Axinom, EZDRM, BuyDRM, Vualto, AWS
+   MediaPackage/SPEKE, ...) who already has one.
+2. Real Widevine content keys, obtained from Google's key server, used to
+   package with a **real** Widevine `pssh` (`shaka-packager`'s
+   `--enable_widevine_encryption --key_server_url=... --signer=...` flags —
+   these need real credentials; our `package.sh` deliberately uses
+   `--enable_raw_key_encryption` instead, which only produces the
+   DRM-agnostic "common" `pssh`).
+3. A **real** Widevine license server (yours, or the SaaS vendor's) that the
+   browser's real Widevine CDM negotiates with directly — a proprietary wire
+   format Google doesn't publish.
+
+That's precisely the line PLAN.md's non-goals draw: "Obtaining a real
+Widevine licence from Google. Not available to individuals, and not
+needed — we implement the *shape* of the protocol, not the proprietary wire
+format." This PoC's own `/license` endpoint is that shape, decrypted via
+ClearKey; it was never going to be a drop-in replacement for a real
+Widevine backend, by design.
 
 ## Verifying without a human
 

@@ -184,7 +184,12 @@ async function requestLicense(device, contentId, kids, sessionId) {
 }
 
 async function loadWithProtocol() {
-  const securityLevel = document.getElementById('securityLevel').value;
+  let securityLevel = document.getElementById('securityLevel').value;
+  if (securityLevel === 'AUTO') {
+    log('auto mode: probing real hardware before deciding what to request...');
+    securityLevel = await detectRealSecurityLevel();
+    log('real hardware probe says', securityLevel, '-> requesting that level from our own protocol');
+  }
   const kids = await discoverKids(MANIFEST_URL);
   log('discovered KIDs from manifest:', kids);
 
@@ -308,6 +313,31 @@ async function probeKeySystem(keySystem, robustnessLevels) {
     }
   }
   return results;
+}
+
+// Maps the real EME robustness ceiling to the SW/TEE vocabulary our own
+// protocol understands. This is the bridge between "what the platform
+// actually is" and "what we ask docs/01-protocol.md's /provision for" --
+// note it still can't produce real attestation (see SIMULATED_ATTESTATION_SECRET
+// above): even a genuinely HW-capable device can only prove that to a real
+// DRM vendor's license server, not to ours. Our /provision has no way to
+// verify a hardware claim without Phase 6's actual Secure Enclave wiring, so
+// this only decides *whether we bother sending* the (still simulated)
+// attestation secret, not whether the server should trust it any more than
+// it already did.
+async function detectRealSecurityLevel() {
+  const results = await probeKeySystem('com.widevine.alpha', ROBUSTNESS_PROBES['com.widevine.alpha']);
+  const highest = results.find(r => r.supported);
+  if (!highest) {
+    const timedOut = results.some(r => r.timedOut);
+    log(timedOut
+      ? '  Widevine probe timed out (CDM component not warm) -> defaulting to SW'
+      : '  no real Widevine CDM available in this browser at all -> SW');
+    return 'SW';
+  }
+  const isHardware = highest.robustness.startsWith('HW_');
+  log('  real robustness ceiling:', highest.robustness, '->', isHardware ? 'TEE' : 'SW');
+  return isHardware ? 'TEE' : 'SW';
 }
 
 async function probeHardwareSecurityLevel() {
