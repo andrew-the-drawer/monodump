@@ -320,21 +320,68 @@ binding.
 the SEP is a key store with compute, not a full TEE that can run our decryptor. Be honest
 about this boundary in the write-up; it's exactly the L2-vs-L1 distinction.
 
-**6b — Optional, the real thing (OP-TEE on QEMU).** To close that gap, build OP-TEE for
-QEMU ARMv8 and write a **Trusted Application** that: holds the device key, unwraps the
-content key, and performs the AES-CTR sample decryption *inside* the secure world,
-returning only plaintext samples. The REE-side Python CDM talks to it via the OP-TEE client
-library. This is structurally what Widevine L1 does, minus the secure video path (QEMU has
-no protected display).
+**6b — Real secure-world execution (OP-TEE on QEMU + Secure Data Path).** Build OP-TEE for
+`qemu_armv8` with `CFG_SECURE_DATA_PATH=y` and write a **Trusted Application** that holds
+the device key, unwraps the content key, and performs AES-CTR sample decryption *inside*
+the secure world.
 
-Heavier — a day or two of toolchain wrangling — but it's the difference between reading
-about TrustZone and having run code in it. Recommend attempting it; drop it without guilt
-if the toolchain fights back, since 6a already carries most of the teaching value.
+The feature that makes this more than a toy is **SDP**. OP-TEE carves an SDP region out of
+the end of QEMU's secure memory and maps it **only into TAs invoked with that buffer as a
+parameter — not into OP-TEE core, and never into Linux**. Normal world allocates the buffer
+via a DMA-BUF heap (`/dev/dma_heap/sdp`) and only ever holds an opaque handle. So decrypted
+samples land somewhere the REE cannot read, enforced by the memory controller.
 
-**6c — The write-up** (`docs/02-tee.md`): the above, plus the honest limits — TEEs don't
+Reference implementation to crib from: [`optee_test/host/xtest/sdp_basic.c`][sdp] — a CA
+allocates a secure buffer and invokes a TA for *inject → transform → dump*. Our TA is that
+with `transform` replaced by AES-CTR decrypt.
+
+Known toolchain trap: `CFG_WITH_PAGER=y` + `CFG_SECURE_DATA_PATH=y` hangs OP-TEE core init
+on the QEMU platform ([optee_os#1656][bug]). Build without the pager.
+
+*Design the demo around the negative test, not the pixels.* QEMU has no VPU and no
+protected display, so the only way to *watch* the video is to hand plaintext to normal
+world — which destroys the property being demonstrated. Deliverables instead:
+- the CA holding a handle to a buffer it provably cannot read (`/dev/mem` scrape, memory
+  dump, direct mapping attempt → fault or zeros);
+- the TA proving correct decryption by returning a **hash** of the plaintext, never the
+  plaintext;
+- a deliberately-broken "debug release" mode that dumps frames to normal world, labelled
+  as exactly the thing real hardware forbids.
+
+Budget a day or two of toolchain wrangling. Worth it: this is the difference between
+reading about TrustZone and having run code in it.
+
+**6c — Optional side quest: an actual end-to-end secure video path (real hardware).**
+6b closes decrypt + buffer isolation. The remaining links — secure *decode* and secure
+*display* — cannot be emulated; they need silicon. A real L1 path is decrypt → secure VPU
+reads the protected buffer → display controller composites from protected memory → HDCP on
+the wire.
+
+The accessible board is an **NXP i.MX8M Mini/Plus EVK** (~$200–350), which has vendor SVP
+support: [Igalia/WPE demonstrated 4Kp60 through secure VPU + DCSS compositor][linaro] with
+buffers protected by RDC and TZASC. Real BSP work, not a weekend. Only take this on if the
+E2E path is the point rather than the understanding.
+
+| | Decrypt in TEE | Plaintext REE-unreadable | Decode | Display + HDCP |
+|---|---|---|---|---|
+| 6a Secure Enclave | key ops only | ✗ | ✗ | ✗ |
+| 6b QEMU + SDP | ✓ | ✓ *provable* | ✗ | ✗ |
+| 6c i.MX8M | ✓ | ✓ | ✓ secure VPU | ✓ DCSS + HDCP |
+
+[sdp]: https://github.com/OP-TEE/optee_test/blob/master/host/xtest/sdp_basic.c
+[bug]: https://github.com/OP-TEE/optee_os/issues/1656
+[linaro]: https://static.linaro.org/connect/san19/presentations/san19-107.pdf
+
+**6d — The write-up** (`docs/02-tee.md`): the above, plus the honest limits — TEEs don't
 stop screen capture on open platforms, don't stop analog-hole recording, and have
 themselves been broken (TrustZone kernel exploits, SEP research). DRM is economics, not
 mathematics: it raises cost, it doesn't make copying impossible.
+
+Case study to carry into `docs/03-attacks.md`: [sigma-star, June 2026][ss] — a DDR memory
+alias on i.MX 8M bypasses Arm TrustZone and exposes OP-TEE's secure memory to Linux. Real
+SVP silicon, real isolation failure, and directly relevant if 6c gets attempted.
+
+[ss]: https://sigma-star.at/blog/2026/06/trustzone-intermezzo/
 
 ---
 
