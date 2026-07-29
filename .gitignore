@@ -155,3 +155,15 @@ chess-dl/data/*
 !chess-dl/data/.gitkeep
 chess-dl/checkpoints/*
 !chess-dl/checkpoints/.gitkeep
+# drm-poc: packaged media + local DRM state
+drm-poc/packaging/content/
+# drm-poc: SwiftPM build artifacts for the Secure Enclave helper CLI
+drm-poc/cdm/tee/macos_sep/.build/
+drm-poc/cdm/tee/macos_sep/.swiftpm/
+# drm-poc: local Secure Enclave key blobs + granted content keys (demo state)
+drm-poc/cdm/tee/macos_sep/.identities/
+drm-poc/cdm/tee/macos_sep/.last_granted_keys.json
+drm-poc/**/*.db
+drm-poc/bin/
+drm-poc/server/*.pem
+drm-poc/server/*.bin
