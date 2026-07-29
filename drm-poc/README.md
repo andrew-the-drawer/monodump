@@ -3,11 +3,12 @@
 A from-scratch, Netflix-shaped DRM stack: encode → CENC-encrypt with
 per-tier keys → serve a real (if simplified) license protocol → gate quality
 tiers by a server-asserted security level. See `PLAN.md` for the full design
-and rationale; `docs/` for the primer, protocol spec, and (later) the TEE/
-attack write-ups.
+and rationale; `docs/` for the primer, protocol spec, and TEE write-up.
 
-**Status: Phases 0–5 implemented.** Phase 6 (real TEE — Secure Enclave /
-OP-TEE) and Phase 7 (attack demo) are not part of this pass.
+**Status: Phases 0–5 implemented. Phase 6a (Secure Enclave) implemented and
+verified against real hardware. Phase 6b (OP-TEE/QEMU) scaffolded but
+UNTESTED — not built or run.** Phase 7 (attack demo) is not part of this
+pass. See "Phase 6" below and `docs/02-tee.md` for the full account.
 
 ## Background: what is EME?
 
@@ -173,6 +174,42 @@ the 48-hour rental window and multi-second renewal cycle in a few seconds.
 Those two routes plus `/admin/devices*` are demo/ops seams, not part of the
 device-facing protocol — see the comments in `server/main.py`.
 
+## Phase 6 — TEE
+
+Full design, what got investigated, and honest limits: `docs/02-tee.md`.
+
+**6a — Secure Enclave (real hardware, verified on this machine):**
+
+```bash
+cd drm-poc/cdm/tee/macos_sep
+swift build -c release           # once
+
+cd ../../../server && uvicorn main:app --port 8000 &   # if not already running
+cd ../cdm/tee/macos_sep
+python3 device.py                 # provisions via a real SE key, gets a real
+                                   # license, all 5 KIDs (TEE-gated)
+python3 decrypt_segment.py        # real AES-CTR decrypt of a packaged segment
+                                   # using the key device.py just got, confirmed
+                                   # via a clean ffmpeg decode
+./prove_nonextractable.sh         # shows the on-disk identity-key blob can't
+                                   # be used as a private key by anything but
+                                   # the Secure Enclave that produced it
+```
+
+The `attestation_kind` field in `device.py`'s output tells you which path
+fired: `real_sep_pop` (a real proof-of-possession signature from the SEP)
+vs. the pre-Phase-6 `simulated` shared secret the browser demo above still
+uses. See `docs/02-tee.md` for exactly what proof-of-possession does and
+doesn't prove — it is **not** remote attestation; that turned out to be
+unavailable on macOS entirely (also documented there).
+
+**6b — OP-TEE on QEMU + Secure Data Path: scaffolded, UNTESTED.** Complete
+TA/CA/build source is in `cdm/tee/optee/`, but none of it has been
+compiled or booted — it needs a Linux build host (Docker), ~15–20GB of
+disk, and a multi-hour first build, which was a deliberate scope cut for
+this pass rather than an oversight. See `cdm/tee/optee/README.md`'s bolded
+Status line before assuming any of it works.
+
 ## What's simulated vs real
 
 - **Real**: CENC encryption with per-tier keys (Phase 1); ECDSA/ECDH P-256 +
@@ -182,10 +219,20 @@ device-facing protocol — see the comments in `server/main.py`.
   Phase 5 tier gating (the KID subset really is decided server-side from a
   server-held security-level record, and ClearKey really can't decrypt what
   it wasn't given).
-- **Simulated, clearly labeled in code and `docs/01-protocol.md`**: TEE
-  attestation is a hardcoded shared secret
-  (`SIMULATED_ATTESTATION_SECRET`), not a real hardware-rooted signature —
-  that's what Phase 6 (Secure Enclave / OP-TEE, not built here) replaces.
+  Phase 6a's `real_sep_pop` attestation path is also real: genuine ECDSA
+  signing and ECDH key agreement performed by this machine's actual Secure
+  Enclave, cross-verified byte-for-byte against the same `cryptography`
+  primitives the server uses, plus a real AES-CTR decrypt of a packaged
+  segment confirmed via a clean `ffmpeg` decode — see `docs/02-tee.md`.
+- **Simulated, clearly labeled in code and `docs/01-protocol.md`**: the
+  browser demo's TEE attestation is a hardcoded shared secret
+  (`SIMULATED_ATTESTATION_SECRET`), not a real hardware-rooted signature.
+  Phase 6a replaces this with real proof-of-possession for its own
+  standalone driver, but — a finding from actually building it, not an
+  assumption — genuine third-party *attestation* (proving the key lives in
+  a real SEP, not just that whoever's calling holds it) turned out to have
+  no supported public API on macOS at all; see `docs/02-tee.md`. Phase 6b
+  (OP-TEE/QEMU) is scaffolded but unbuilt (`cdm/tee/optee/README.md`).
   Policy enforcement *after* the initial grant (expiry/rental/revocation/
   concurrency) is modeled as "the periodic renewal call gets rejected and
   the client tears down playback," rather than "the CDM's already-issued
@@ -206,7 +253,9 @@ drm-poc/
 ├── bin/packager              gitignored — prebuilt shaka-packager binary
 ├── docs/
 │   ├── 00-primer.md          CENC, boxes, EME state machine
-│   └── 01-protocol.md        the Phase 3 protocol spec, written before the code
+│   ├── 01-protocol.md        the Phase 3 protocol spec, written before the code
+│   └── 02-tee.md              Phase 6 TEE deep-dive: what got built, the
+│                              attestation investigation, honest limits
 ├── packaging/
 │   ├── encode.sh / package.sh
 │   └── content/               gitignored — source, encoded, packaged output
@@ -214,11 +263,20 @@ drm-poc/
 │   ├── main.py                FastAPI app: routes
 │   ├── license.py             /provision, /license handlers
 │   ├── crypto.py              ECDSA/ECDH/HKDF/AEAD/HMAC primitives, root CA, master token
+│   ├── attestation.py          Phase 6a proof-of-possession verification
 │   ├── policy.py              Phase 4/5 enforcement
 │   ├── models.py               keys.db / devices.db / policies.db (all gitignored)
 │   └── seed_content.py
 ├── player/
 │   ├── index.html / cdm-bridge.js   shaka-player + WebCrypto protocol client
+├── cdm/tee/
+│   ├── macos_sep/              Phase 6a — real Secure Enclave, verified
+│   │   ├── Sources/sep-helper/main.swift   the SE-backed key operations
+│   │   ├── device.py, decrypt_segment.py, prove_nonextractable.sh
+│   │   └── .identities/, .last_granted_keys.json   gitignored demo state
+│   └── optee/                  Phase 6b — OP-TEE/QEMU + SDP, UNTESTED scaffold
+│       ├── ta/, host/, Dockerfile, build.sh, run.sh, gen_test_vectors.py
+│       └── README.md            bolded Status line — read before trusting it
 └── tools/
     ├── inspect_mp4.py          Phase 1 box dumper
     ├── protocol_client.py      Python stand-in device (used for testing)

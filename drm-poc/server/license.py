@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import uuid
 
+import attestation as attestation_mod
 import crypto
 import models
 import policy
@@ -24,13 +25,26 @@ def handle_provision(identity_pubkey_jwk: dict, requested_security_level: str, a
     if requested not in ("SW", "TEE"):
         raise ProtocolError(400, "invalid_security_level")
 
-    # The server decides what it believes, not the client. See
-    # docs/01-protocol.md for why this check is a labeled simulation until
-    # Phase 6 wires up real Secure Enclave attestation.
-    if requested == "TEE" and attestation == crypto.SIMULATED_ATTESTATION_SECRET:
-        granted_level = "TEE"
-    else:
-        granted_level = "SW"  # silently downgraded if attestation is missing/wrong
+    # The server decides what it believes, not the client. Two paths grant
+    # TEE, both explicitly labeled in the response:
+    #  - "real_sep_pop": a Phase 6a `cdm/tee/macos_sep` proof-of-possession
+    #    claim (see server/attestation.py for exactly what this does and
+    #    does not prove — it is not remote attestation).
+    #  - "simulated": the pre-Phase-6 hardcoded shared secret, kept for the
+    #    Phase 2-5 in-browser demo (docs/01-protocol.md).
+    granted_level = "SW"
+    attestation_kind = "none"
+    if requested == "TEE" and attestation:
+        if attestation_mod.looks_like_pop_claim(attestation):
+            ok, reason = attestation_mod.verify_pop_claim(attestation, identity_pubkey_jwk)
+            if ok:
+                granted_level = "TEE"
+                attestation_kind = "real_sep_pop"
+            else:
+                attestation_kind = f"real_sep_pop_rejected:{reason}"
+        elif attestation == crypto.SIMULATED_ATTESTATION_SECRET:
+            granted_level = "TEE"
+            attestation_kind = "simulated"
 
     device_id = uuid.uuid4().hex
     models.create_device(device_id, json.dumps(identity_pubkey_jwk), granted_level)
@@ -39,6 +53,7 @@ def handle_provision(identity_pubkey_jwk: dict, requested_security_level: str, a
     return {
         "device_id": device_id,
         "security_level": granted_level,
+        "attestation_kind": attestation_kind,
         "device_cert": cert,
         "master_token": master_token,
     }

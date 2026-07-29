@@ -46,19 +46,36 @@ Server logic:
    client's word.** For `SW`, no evidence is required — that's the whole
    point of `SW`: it's the "I have no proof" tier, and playback policy will
    treat it that way (Phase 5 withholds the UHD key from it).
-   For `TEE`, the server checks `attestation` against
-   `SIMULATED_ATTESTATION_SECRET` (a constant in `server/crypto.py`).
-   **This is a deliberate, clearly-labeled stand-in.** A real system checks a
-   certificate chain rooted in a vendor key burned into silicon at the
-   factory (see PLAN.md Part 4 — "How Netflix uses it, end to end", step 1
-   and 3); nothing server-side can *verify* TEE residency without that root
-   of trust existing first. Phase 6a (Secure Enclave) is what makes this
-   check real: the attestation becomes "here is a signature only the SEP's
-   provisioned key could have produced," and the server verifies it against
-   Apple's device attestation root instead of a shared secret. Until then,
-   treat any "TEE" device in Phases 3–5 as a simulation used purely to
-   exercise the tier-gating *mechanism* — do not read anything security-load
-   -bearing into it.
+   For `TEE`, the server accepts either of two `attestation` shapes
+   (`server/attestation.py`), and reports which one fired via
+   `attestation_kind` in the `/provision` response:
+   - The legacy stand-in: `attestation == SIMULATED_ATTESTATION_SECRET` (a
+     constant in `server/crypto.py`). **A deliberate, clearly-labeled
+     placeholder** — anyone reading this file can send the exact string.
+     Kept for the Phase 2–5 in-browser demo, which has no hardware backing
+     to speak of.
+   - Phase 6a's real path: a **proof-of-possession claim** from
+     `cdm/tee/macos_sep` — a fresh signature, made by the Secure Enclave
+     private key itself, over a timestamped payload. This is genuinely
+     real: only that SE key could have produced it, and non-extractability
+     is enforced by the SEP, not by us. **It is still not remote
+     attestation.** The original plan for this section was "the server
+     verifies it against Apple's device attestation root" — that turned out
+     to be unavailable: `SecKeyCreateAttestation` has no public header on
+     macOS, and Apple's own App Attest API documents `.supported == false`
+     on every Mac target, Apple silicon included (see `docs/02-tee.md` for
+     the investigation). So there is no vendor-rooted chain a compromised
+     client binary couldn't also fake with a plain software key. What *is*
+     real and independently true for the actual `cdm/tee/macos_sep` binary —
+     the identity key really can't be exported, even by us — is
+     demonstrated locally (`prove_nonextractable.sh`), not provable over the
+     wire to this server.
+
+   Treat any "TEE" device in Phases 3–5's browser demo (`attestation_kind:
+   "simulated"`) as a simulation used purely to exercise the tier-gating
+   *mechanism*. A Phase 6a device (`attestation_kind: "real_sep_pop"`) is
+   real in the narrower sense above — do not read more security guarantee
+   into either than PLAN.md's own honesty note for 6a describes.
 3. Issue a **device certificate**: `{device_id, identity_pubkey_jwk,
    security_level, issued_at}` signed (ECDSA-SHA256) by the server's root CA
    key. Stored client-side for completeness/debuggability; not re-verified
