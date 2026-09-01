@@ -1,22 +1,22 @@
-import { Platform } from 'react-native';
-import type { ModelInfo } from '../types/model';
-import type { DownloadProgress } from '../types/model';
+import { Directory, DownloadTask, File, Paths } from 'expo-file-system';
+import type { DownloadProgress, ModelInfo } from '../types/model';
 
 export type DownloadSubscriber = (progress: DownloadProgress) => void;
 
+const modelsDirectory = new Directory(Paths.document, 'models');
+
 /**
- * RN's JS-level networking dies when the app backgrounds. Android's native
- * DownloadManager survives backgrounding, so downloads are bridged to it
- * there; iOS uses a background URLSession equivalent. Vision models download
- * their GGUF + mmproj in parallel, not sequentially — roughly halves total time.
+ * Backed by expo-file-system's DownloadTask, which is the cross-platform
+ * equivalent of what used to require hand-written native bridges here:
+ * `sessionType: 'background'` maps to a real background NSURLSession on iOS,
+ * and progress/cancellation are handled uniformly on both platforms. Vision
+ * models download their GGUF + mmproj in parallel, not sequentially —
+ * roughly halves total time.
  */
 class ModelDownloadService {
   private progress = new Map<string, DownloadProgress>();
   private subscribers = new Map<string, Set<DownloadSubscriber>>();
-  // Android DownloadManager delivers a completion broadcast that can arrive
-  // before RN finishes registering its listener — track delivery explicitly
-  // instead of assuming listener-then-broadcast ordering.
-  private completionDelivered = new Set<string>();
+  private activeTasks = new Map<string, DownloadTask[]>();
 
   subscribe(modelId: string, subscriber: DownloadSubscriber): () => void {
     const set = this.subscribers.get(modelId) ?? new Set();
@@ -32,36 +32,86 @@ class ModelDownloadService {
     for (const subscriber of this.subscribers.get(modelId) ?? []) subscriber(progress);
   }
 
-  async download(model: ModelInfo): Promise<void> {
+  /** Resolves to a copy of `model` whose file/mmproj filenames point at the downloaded local files. */
+  async download(model: ModelInfo): Promise<ModelInfo> {
+    if (!model.huggingFaceRepo) {
+      throw new Error(`"${model.displayName}" has no download source — was it already imported locally?`);
+    }
+
+    if (!modelsDirectory.exists) modelsDirectory.create({ idempotent: true });
+
     const totalBytes = model.file.sizeBytes + (model.mmproj?.sizeBytes ?? 0);
+    const bytesByFile = new Map<string, number>();
     this.setProgress(model.id, { modelId: model.id, status: 'downloading', progress: 0, bytesDownloaded: 0, totalBytes });
 
+    const reportProgress = (remoteFilename: string, bytesWritten: number) => {
+      bytesByFile.set(remoteFilename, bytesWritten);
+      const bytesDownloaded = [...bytesByFile.values()].reduce((sum, b) => sum + b, 0);
+      this.setProgress(model.id, {
+        modelId: model.id,
+        status: 'downloading',
+        progress: totalBytes > 0 ? bytesDownloaded / totalBytes : 0,
+        bytesDownloaded,
+        totalBytes,
+      });
+    };
+
     try {
-      const downloads = [this.downloadFile(model.id, model.file.filename)];
-      if (model.mmproj) downloads.push(this.downloadFile(model.id, model.mmproj.filename));
-      await Promise.all(downloads);
+      const [file, mmprojFile] = await Promise.all([
+        this.downloadFile(model.id, model.huggingFaceRepo, model.file.filename, reportProgress),
+        model.mmproj ? this.downloadFile(model.id, model.huggingFaceRepo, model.mmproj.filename, reportProgress) : Promise.resolve(undefined),
+      ]);
 
       this.setProgress(model.id, { modelId: model.id, status: 'completed', progress: 1, bytesDownloaded: totalBytes, totalBytes });
+
+      return {
+        ...model,
+        file: { filename: file.uri, sizeBytes: file.size ?? model.file.sizeBytes },
+        mmproj: mmprojFile && model.mmproj ? { filename: mmprojFile.uri, sizeBytes: mmprojFile.size ?? model.mmproj.sizeBytes } : undefined,
+      };
     } catch (error) {
+      const current = this.progress.get(model.id);
       this.setProgress(model.id, {
         modelId: model.id,
         status: 'failed',
-        progress: this.progress.get(model.id)?.progress ?? 0,
-        bytesDownloaded: this.progress.get(model.id)?.bytesDownloaded ?? 0,
+        progress: current?.progress ?? 0,
+        bytesDownloaded: current?.bytesDownloaded ?? 0,
         totalBytes,
         error: error instanceof Error ? error.message : String(error),
       });
       throw error;
+    } finally {
+      this.activeTasks.delete(model.id);
     }
   }
 
-  private async downloadFile(modelId: string, remoteFilename: string): Promise<void> {
-    if (Platform.OS === 'android') {
-      // TODO: bridge to Android's native DownloadManager; listen for ACTION_DOWNLOAD_COMPLETE
-      // guarded by `completionDelivered` to cover the early-broadcast race.
-    } else {
-      // TODO: iOS background URLSession download task.
-    }
+  private async downloadFile(
+    modelId: string,
+    repo: string,
+    remoteFilename: string,
+    onProgress: (remoteFilename: string, bytesWritten: number) => void
+  ): Promise<File> {
+    // Repo-relative filenames can contain subfolders (e.g. a quant variant's own directory) — flatten for local storage.
+    const localFilename = remoteFilename.replace(/[\\/]/g, '_');
+    const destination = new File(modelsDirectory, localFilename);
+    if (destination.exists) destination.delete();
+
+    const task = new DownloadTask(`https://huggingface.co/${repo}/resolve/main/${remoteFilename}`, destination, {
+      sessionType: 'background',
+      onProgress: ({ bytesWritten }) => onProgress(remoteFilename, bytesWritten),
+    });
+
+    const tasks = this.activeTasks.get(modelId) ?? [];
+    tasks.push(task);
+    this.activeTasks.set(modelId, tasks);
+
+    const file = await task.downloadAsync();
+    if (!file) throw new Error(`Download of ${remoteFilename} was interrupted.`);
+    return file;
+  }
+
+  cancel(modelId: string): void {
+    for (const task of this.activeTasks.get(modelId) ?? []) task.cancel();
   }
 }
 

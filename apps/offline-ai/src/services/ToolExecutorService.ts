@@ -1,4 +1,5 @@
 import type { ToolCall, ToolResult } from '../types/chat';
+import type { ToolDefinitionSchema } from './LlamaService';
 import { calculatorTool } from './tools/calculator';
 import { dateTimeTool } from './tools/dateTime';
 import { deviceInfoTool } from './tools/deviceInfo';
@@ -29,6 +30,14 @@ class ToolExecutorService {
 
   listTools(): ToolDefinition[] {
     return [...this.registry.values()];
+  }
+
+  /** OpenAI-style tool schema for llama.rn's jinja-templated `tools` param. */
+  listToolSchemas(): ToolDefinitionSchema[] {
+    return this.listTools().map((tool) => ({
+      type: 'function',
+      function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+    }));
   }
 
   get maxIterations(): number {

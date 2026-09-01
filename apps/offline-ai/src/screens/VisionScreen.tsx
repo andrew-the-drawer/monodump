@@ -1,8 +1,11 @@
 import { useState } from 'react';
-import { Image, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, Image, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
+import { Ionicons } from '@expo/vector-icons';
 import { llamaService } from '../services/LlamaService';
 import { useLlmStore } from '../stores/useLlmStore';
+import { Button, Card, EmptyState, Screen, ScreenHeader } from '../components/ui';
+import { useTheme, radius, spacing, typography } from '../theme/theme';
 
 /**
  * Vision models need a GGUF + mmproj pair, but that's a loading-time concern
@@ -15,18 +18,27 @@ export default function VisionScreen() {
   const [question, setQuestion] = useState('Describe this image');
   const [answer, setAnswer] = useState('');
   const [isRunning, setIsRunning] = useState(false);
+  const { colors } = useTheme();
 
   const pickImage = async () => {
     const result = await DocumentPicker.getDocumentAsync({ type: 'image/*' });
-    if (!result.canceled && result.assets[0]) setImageUri(result.assets[0].uri);
+    if (!result.canceled && result.assets[0]) {
+      setImageUri(result.assets[0].uri);
+      setAnswer('');
+    }
   };
 
   const handleAsk = async () => {
     if (!imageUri || !loadedModel) return;
     setIsRunning(true);
     try {
-      const { text } = await llamaService.generate({ prompt: question, imageUri });
+      const { text } = await llamaService.generate({
+        messages: [{ id: 'vision-question', role: 'user', content: question, createdAt: Date.now() }],
+        imageUri,
+      });
       setAnswer(text);
+    } catch (error) {
+      Alert.alert('Could not analyze image', error instanceof Error ? error.message : String(error));
     } finally {
       setIsRunning(false);
     }
@@ -34,36 +46,60 @@ export default function VisionScreen() {
 
   if (loadedModel && loadedModel.capability !== 'vision') {
     return (
-      <View style={styles.container}>
-        <Text style={styles.warning}>Loaded model doesn't support vision. Load a vision model (e.g. SmolVLM) from the Models tab.</Text>
-      </View>
+      <Screen>
+        <ScreenHeader title="Vision" />
+        <Card style={{ marginHorizontal: spacing.lg }}>
+          <EmptyState
+            icon="alert-circle-outline"
+            title="No vision model loaded"
+            subtitle={`"${loadedModel.displayName}" doesn't support images — load a vision model (e.g. SmolVLM) from the Models tab.`}
+          />
+        </Card>
+      </Screen>
     );
   }
 
   return (
-    <View style={styles.container}>
-      <TouchableOpacity style={styles.imagePicker} onPress={pickImage}>
-        {imageUri ? <Image source={{ uri: imageUri }} style={styles.image} resizeMode="cover" /> : <Text>Pick an image</Text>}
-      </TouchableOpacity>
+    <Screen>
+      <ScreenHeader title="Vision" subtitle="Ask questions about an image, on-device" />
+      <ScrollView contentContainerStyle={{ paddingHorizontal: spacing.lg, paddingBottom: spacing.xxxl, gap: spacing.md }} keyboardShouldPersistTaps="handled">
+        <TouchableOpacity onPress={pickImage} activeOpacity={0.8}>
+          {imageUri ? (
+            <Image source={{ uri: imageUri }} style={styles.image} resizeMode="cover" />
+          ) : (
+            <View style={[styles.imagePicker, { borderColor: colors.border, backgroundColor: colors.surfaceAlt }]}>
+              <Ionicons name="image-outline" size={28} color={colors.textMuted} />
+              <Text style={[typography.body, { color: colors.textMuted, marginTop: spacing.sm }]}>Tap to pick an image</Text>
+            </View>
+          )}
+        </TouchableOpacity>
 
-      <TextInput style={styles.input} value={question} onChangeText={setQuestion} placeholder="Ask about the image..." />
+        <TextInput
+          style={[styles.input, { borderColor: colors.border, backgroundColor: colors.surface, color: colors.textPrimary }]}
+          value={question}
+          onChangeText={setQuestion}
+          placeholder="Ask about the image..."
+          placeholderTextColor={colors.textMuted}
+        />
 
-      <TouchableOpacity style={styles.button} onPress={handleAsk} disabled={!imageUri || isRunning}>
-        <Text style={styles.buttonText}>{isRunning ? 'Thinking...' : 'Ask'}</Text>
-      </TouchableOpacity>
+        <Button label={isRunning ? 'Thinking...' : 'Ask'} onPress={handleAsk} disabled={!imageUri || !loadedModel} loading={isRunning} icon="sparkles-outline" />
 
-      {answer ? <Text style={styles.answer}>{answer}</Text> : null}
-    </View>
+        {!loadedModel && (
+          <Text style={[typography.caption, { color: colors.textMuted, textAlign: 'center' }]}>Load a vision model from the Models tab first.</Text>
+        )}
+
+        {answer ? (
+          <Card>
+            <Text style={[typography.body, { color: colors.textPrimary }]}>{answer}</Text>
+          </Card>
+        ) : null}
+      </ScrollView>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16, gap: 12 },
-  warning: { color: '#92400E' },
-  imagePicker: { height: 200, borderRadius: 8, backgroundColor: '#F3F4F6', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
-  image: { width: '100%', height: '100%' },
-  input: { borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 8, padding: 12 },
-  button: { backgroundColor: '#2563EB', borderRadius: 8, padding: 12, alignItems: 'center' },
-  buttonText: { color: 'white', fontWeight: '600' },
-  answer: { fontSize: 15, color: '#111827', lineHeight: 22 },
+  imagePicker: { height: 220, borderRadius: radius.lg, borderWidth: 1.5, borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center' },
+  image: { width: '100%', height: 220, borderRadius: radius.lg },
+  input: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: spacing.md, fontSize: 15 },
 });

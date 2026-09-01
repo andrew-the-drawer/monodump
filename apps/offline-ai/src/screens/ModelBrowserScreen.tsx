@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import { Alert, FlatList, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Alert, FlatList, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { RECOMMENDED_MODELS } from '../types/model';
 import { modelDiscoveryService } from '../services/ModelDiscoveryService';
 import { modelDownloadService } from '../services/ModelDownloadService';
@@ -7,16 +8,42 @@ import { localModelImportService } from '../services/LocalModelImportService';
 import { useModelStore } from '../stores/useModelStore';
 import { useLlmStore } from '../stores/useLlmStore';
 import { llamaService } from '../services/LlamaService';
-import type { ModelInfo } from '../types/model';
+import { Card, Chip, EmptyState, IconButton, ProgressBar, Screen, ScreenHeader, SectionLabel } from '../components/ui';
+import { useTheme, radius, spacing, typography } from '../theme/theme';
+import { formatBytes } from '../utils/memoryBudget';
+import type { DownloadProgress, ModelCapability, ModelInfo } from '../types/model';
+
+const CAPABILITY_ICON: Record<ModelCapability, keyof typeof Ionicons.glyphMap> = {
+  text: 'chatbubble-outline',
+  vision: 'eye-outline',
+  code: 'code-slash-outline',
+};
+
+function useDownloadProgress(modelId: string): DownloadProgress | null {
+  const [progress, setProgress] = useState<DownloadProgress | null>(null);
+  useEffect(() => modelDownloadService.subscribe(modelId, setProgress), [modelId]);
+  return progress;
+}
 
 export default function ModelBrowserScreen() {
+  const { colors } = useTheme();
   const { downloadedModels, discoveryResults, setDiscoveryResults, addDownloadedModel } = useModelStore();
-  const setLoadedModel = useLlmStore((s) => s.setLoadedModel);
+  const { loadedModel, setLoadedModel } = useLlmStore();
   const [query, setQuery] = useState('');
+  const [isSearching, setIsSearching] = useState(false);
+  const [loadingModelId, setLoadingModelId] = useState<string | null>(null);
 
-  const handleSearch = async () => {
-    const results = await modelDiscoveryService.search(query, { requireFitsDevice: true });
-    setDiscoveryResults(results);
+  const runSearch = async (searchQuery: string) => {
+    if (!searchQuery.trim()) return;
+    setIsSearching(true);
+    try {
+      const results = await modelDiscoveryService.search(searchQuery, { requireFitsDevice: true });
+      setDiscoveryResults(results);
+    } catch (error) {
+      Alert.alert('Search failed', error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsSearching(false);
+    }
   };
 
   const handleImportLocal = async () => {
@@ -30,95 +57,215 @@ export default function ModelBrowserScreen() {
 
   const handleDownload = async (model: ModelInfo) => {
     try {
-      await modelDownloadService.download(model);
-      addDownloadedModel(model);
+      const downloaded = await modelDownloadService.download(model);
+      addDownloadedModel(downloaded);
     } catch (error) {
       Alert.alert('Download failed', error instanceof Error ? error.message : String(error));
     }
   };
 
   const handleLoad = async (model: ModelInfo) => {
+    setLoadingModelId(model.id);
     try {
       await llamaService.loadModel(model);
       setLoadedModel(model);
     } catch (error) {
       Alert.alert("Can't load model", error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoadingModelId(null);
     }
   };
 
   return (
-    <View style={styles.container}>
-      <View style={styles.searchRow}>
-        <TextInput style={styles.searchInput} value={query} onChangeText={setQuery} placeholder="Search HuggingFace..." onSubmitEditing={handleSearch} />
-        <TouchableOpacity style={styles.searchButton} onPress={handleSearch}>
-          <Text style={styles.searchButtonText}>Search</Text>
-        </TouchableOpacity>
-      </View>
+    <Screen>
+      <ScreenHeader title="Models" subtitle="Search HuggingFace, or import a .gguf file you already have" />
 
-      <TouchableOpacity style={styles.importButton} onPress={handleImportLocal}>
-        <Text style={styles.importButtonText}>Import a local .gguf file</Text>
-      </TouchableOpacity>
+      <ScrollView
+        contentContainerStyle={{ paddingHorizontal: spacing.lg, paddingBottom: spacing.xxxl, gap: spacing.lg }}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={{ gap: spacing.lg }}>
+            <View style={styles.searchRow}>
+              <View style={[styles.searchInputWrap, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                <Ionicons name="search" size={17} color={colors.textMuted} />
+                <TextInput
+                  style={[styles.searchInput, { color: colors.textPrimary }]}
+                  value={query}
+                  onChangeText={setQuery}
+                  placeholder="Search HuggingFace models..."
+                  placeholderTextColor={colors.textMuted}
+                  onSubmitEditing={() => runSearch(query)}
+                  returnKeyType="search"
+                />
+              </View>
+              <IconButton name="arrow-forward" onPress={() => runSearch(query)} background={colors.primary} color={colors.onPrimary} />
+            </View>
 
-      <Text style={styles.sectionHeader}>Recommended</Text>
-      <FlatList
-        data={RECOMMENDED_MODELS}
-        keyExtractor={(item) => item.displayName}
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        renderItem={({ item }) => (
-          <View style={styles.recommendedChip}>
-            <Text style={styles.recommendedName}>{item.displayName}</Text>
-            <Text style={styles.recommendedMeta}>{item.organization} · {item.capability}</Text>
+            <TouchableOpacity
+              onPress={handleImportLocal}
+              style={[styles.importButton, { borderColor: colors.primary }]}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="folder-open-outline" size={17} color={colors.primary} />
+              <Text style={[typography.subtitle, { color: colors.primary, marginLeft: spacing.sm }]}>Import a local .gguf file</Text>
+            </TouchableOpacity>
+
+            <View>
+              <SectionLabel>Recommended</SectionLabel>
+              <FlatList
+                data={RECOMMENDED_MODELS}
+                keyExtractor={(item) => item.displayName}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                ItemSeparatorComponent={() => <View style={{ width: spacing.sm }} />}
+                renderItem={({ item }) => (
+                  <TouchableOpacity onPress={() => { setQuery(item.displayName); runSearch(item.displayName); }} activeOpacity={0.7}>
+                    <Card style={styles.recommendedChip}>
+                      <Chip label={item.capability} tone={item.capability === 'vision' ? 'vision' : 'primary'} />
+                      <Text style={[typography.subtitle, { color: colors.textPrimary, marginTop: spacing.sm }]}>{item.displayName}</Text>
+                      <Text style={[typography.caption, { color: colors.textMuted }]}>{item.organization}</Text>
+                    </Card>
+                  </TouchableOpacity>
+                )}
+              />
+            </View>
+
+            <View>
+              <SectionLabel>Downloaded</SectionLabel>
+              {downloadedModels.length === 0 ? (
+                <Card>
+                  <EmptyState icon="download-outline" title="No models yet" subtitle="Search above or import a local .gguf file to get started." />
+                </Card>
+              ) : (
+                <View style={{ gap: spacing.sm }}>
+                  {downloadedModels.map((item) => (
+                    <ModelRow
+                      key={item.id}
+                      model={item}
+                      isLoaded={loadedModel?.id === item.id}
+                      isLoading={loadingModelId === item.id}
+                      onPress={() => handleLoad(item)}
+                    />
+                  ))}
+                </View>
+              )}
+            </View>
+
+            {discoveryResults.length > 0 && (
+              <View>
+                <SectionLabel>Search results</SectionLabel>
+                <View style={{ gap: spacing.sm }}>
+                  {discoveryResults.map((item) => (
+                    <SearchResultRow key={item.id} model={item} onDownload={() => handleDownload(item)} />
+                  ))}
+                </View>
+              </View>
+            )}
+
+          {isSearching && (
+            <Text style={[typography.body, { color: colors.textSecondary, textAlign: 'center' }]}>Searching HuggingFace...</Text>
+          )}
+        </View>
+      </ScrollView>
+    </Screen>
+  );
+}
+
+function ModelRow({ model, isLoaded, isLoading, onPress }: { model: ModelInfo; isLoaded: boolean; isLoading: boolean; onPress: () => void }) {
+  const { colors } = useTheme();
+  return (
+    <TouchableOpacity onPress={onPress} disabled={isLoaded || isLoading} activeOpacity={0.7}>
+      <Card style={styles.row}>
+        <View style={[styles.capabilityIcon, { backgroundColor: colors.primarySoft }]}>
+          <Ionicons name={CAPABILITY_ICON[model.capability]} size={18} color={colors.primary} />
+        </View>
+        <View style={{ flex: 1, marginLeft: spacing.md }}>
+          <Text style={[typography.subtitle, { color: colors.textPrimary }]}>{model.displayName}</Text>
+          <Text style={[typography.caption, { color: colors.textMuted }]}>
+            {model.organization} · {model.quant} · {formatBytes(model.file.sizeBytes)}
+          </Text>
+        </View>
+        {isLoading ? (
+          <Ionicons name="hourglass-outline" size={20} color={colors.textMuted} />
+        ) : isLoaded ? (
+          <View style={[styles.loadedBadge, { backgroundColor: colors.primarySoft }]}>
+            <Ionicons name="checkmark" size={14} color={colors.primary} />
           </View>
+        ) : (
+          <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
         )}
-      />
+      </Card>
+    </TouchableOpacity>
+  );
+}
 
-      <Text style={styles.sectionHeader}>Downloaded</Text>
-      <FlatList
-        data={downloadedModels}
-        keyExtractor={(item) => item.id}
-        renderItem={({ item }) => (
-          <TouchableOpacity style={styles.modelRow} onPress={() => handleLoad(item)}>
-            <Text style={styles.modelName}>{item.displayName}</Text>
-            <Text style={styles.modelMeta}>{item.quant} · {item.capability}</Text>
+function SearchResultRow({ model, onDownload }: { model: ModelInfo; onDownload: () => void }) {
+  const { colors } = useTheme();
+  const progress = useDownloadProgress(model.id);
+  const isDownloading = progress?.status === 'downloading';
+
+  return (
+    <Card style={{ gap: spacing.sm }}>
+      <View style={styles.row}>
+        <View style={[styles.capabilityIcon, { backgroundColor: colors.visionSoft }]}>
+          <Ionicons name={CAPABILITY_ICON[model.capability]} size={18} color={colors.vision} />
+        </View>
+        <View style={{ flex: 1, marginLeft: spacing.md }}>
+          <Text style={[typography.subtitle, { color: colors.textPrimary }]} numberOfLines={1}>{model.displayName}</Text>
+          <Text style={[typography.caption, { color: colors.textMuted }]}>
+            {model.organization} · {model.quant} · {formatBytes(model.file.sizeBytes + (model.mmproj?.sizeBytes ?? 0))}
+          </Text>
+        </View>
+        {!isDownloading && (
+          <TouchableOpacity onPress={onDownload} style={[styles.downloadButton, { backgroundColor: colors.primary }]} activeOpacity={0.7}>
+            <Ionicons name="download-outline" size={16} color={colors.onPrimary} />
           </TouchableOpacity>
         )}
-        ListEmptyComponent={<Text style={styles.empty}>No models yet — search above or import a local file.</Text>}
-      />
-
-      {discoveryResults.length > 0 && (
-        <>
-          <Text style={styles.sectionHeader}>Search results</Text>
-          <FlatList
-            data={discoveryResults}
-            keyExtractor={(item) => item.id}
-            renderItem={({ item }) => (
-              <TouchableOpacity style={styles.modelRow} onPress={() => handleDownload(item)}>
-                <Text style={styles.modelName}>{item.displayName}</Text>
-                <Text style={styles.modelMeta}>{item.quant} · {item.capability}</Text>
-              </TouchableOpacity>
-            )}
-          />
-        </>
+      </View>
+      {isDownloading && (
+        <View style={{ gap: spacing.xs }}>
+          <ProgressBar progress={progress.progress} />
+          <View style={styles.row}>
+            <Text style={[typography.micro, { color: colors.textMuted }]}>
+              {formatBytes(progress.bytesDownloaded)} / {formatBytes(progress.totalBytes)}
+            </Text>
+            <TouchableOpacity onPress={() => modelDownloadService.cancel(model.id)}>
+              <Text style={[typography.micro, { color: colors.danger }]}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       )}
-    </View>
+      {progress?.status === 'failed' && (
+        <Text style={[typography.caption, { color: colors.danger }]}>{progress.error}</Text>
+      )}
+    </Card>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16, gap: 12 },
-  searchRow: { flexDirection: 'row', gap: 8 },
-  searchInput: { flex: 1, borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8 },
-  searchButton: { justifyContent: 'center', paddingHorizontal: 16, backgroundColor: '#2563EB', borderRadius: 8 },
-  searchButtonText: { color: 'white', fontWeight: '600' },
-  importButton: { borderWidth: 1, borderColor: '#2563EB', borderRadius: 8, padding: 10, alignItems: 'center' },
-  importButtonText: { color: '#2563EB', fontWeight: '600' },
-  sectionHeader: { fontSize: 13, fontWeight: '700', color: '#6B7280', marginTop: 4 },
-  recommendedChip: { backgroundColor: '#F3F4F6', borderRadius: 8, padding: 10, marginRight: 8, minWidth: 120 },
-  recommendedName: { fontWeight: '600' },
-  recommendedMeta: { fontSize: 12, color: '#6B7280' },
-  modelRow: { paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
-  modelName: { fontWeight: '600' },
-  modelMeta: { fontSize: 12, color: '#6B7280' },
-  empty: { color: '#9CA3AF', paddingVertical: 8 },
+  searchRow: { flexDirection: 'row', gap: spacing.sm, alignItems: 'center' },
+  searchInputWrap: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radius.xl,
+    paddingHorizontal: spacing.lg,
+    height: 48,
+  },
+  searchInput: { flex: 1, fontSize: 15, height: '100%' },
+  importButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderRadius: radius.md,
+    paddingVertical: spacing.md,
+  },
+  recommendedChip: { minWidth: 150, padding: spacing.md },
+  row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  capabilityIcon: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  loadedBadge: { width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
+  downloadButton: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
 });

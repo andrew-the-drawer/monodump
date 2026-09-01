@@ -6,28 +6,33 @@ function nextCallId(): string {
   return `call_${Date.now()}_${callCounter}`;
 }
 
-/**
- * Larger models emit structured JSON tool calls natively through llama.rn.
- * Smaller models emit XML like <tool_call>{"name": ..., "arguments": ...}</tool_call>.
- * Supporting only one path silently drops every model that only knows the other.
- */
-export function parseToolCalls(rawOutput: string): ToolCall[] {
-  return [...parseJsonToolCalls(rawOutput), ...parseXmlToolCalls(rawOutput)];
+export interface NativeToolCall {
+  type: 'function';
+  function: { name: string; arguments: string | Record<string, unknown> };
+  id?: string;
 }
 
-function parseJsonToolCalls(raw: unknown): ToolCall[] {
-  if (!raw || typeof raw !== 'object') return [];
-  const maybeCalls = (raw as { tool_calls?: unknown }).tool_calls;
-  if (!Array.isArray(maybeCalls)) return [];
+/**
+ * Larger models emit structured JSON tool calls natively through llama.rn's
+ * `completion()` result (`result.tool_calls`, already parsed from the jinja
+ * chat template). Smaller models that don't support that format instead emit
+ * XML like <tool_call>{"name": ..., "arguments": ...}</tool_call> inline in
+ * the generated text. Supporting only one path silently drops every model
+ * that only knows the other.
+ */
+export function parseToolCalls(rawOutput: string, nativeToolCalls?: NativeToolCall[]): ToolCall[] {
+  return [...parseNativeToolCalls(nativeToolCalls), ...parseXmlToolCalls(rawOutput)];
+}
 
-  return maybeCalls
-    .map((entry): ToolCall | null => {
-      const fn = (entry as { function?: { name?: string; arguments?: string | Record<string, unknown> } }).function;
-      if (!fn?.name) return null;
-      const args = typeof fn.arguments === 'string' ? safeJsonParse(fn.arguments) : fn.arguments ?? {};
-      return { id: nextCallId(), name: fn.name, arguments: args };
-    })
-    .filter((c): c is ToolCall => c !== null);
+function parseNativeToolCalls(calls?: NativeToolCall[]): ToolCall[] {
+  if (!calls) return [];
+  return calls
+    .filter((call) => !!call.function?.name)
+    .map((call) => ({
+      id: call.id ?? nextCallId(),
+      name: call.function.name,
+      arguments: typeof call.function.arguments === 'string' ? safeJsonParse(call.function.arguments) : call.function.arguments ?? {},
+    }));
 }
 
 const XML_TOOL_CALL = /<tool_call>([\s\S]*?)<\/tool_call>/g;

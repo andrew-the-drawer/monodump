@@ -13,7 +13,7 @@ const ENHANCEMENT_SYSTEM_PROMPT =
 class PromptEnhancementService {
   async enhance(userPrompt: string): Promise<string> {
     const { text } = await llamaService.generate({
-      prompt: userPrompt,
+      messages: [{ id: 'enhance', role: 'user', content: userPrompt, createdAt: Date.now() }],
       systemPrompt: ENHANCEMENT_SYSTEM_PROMPT,
     });
     await llamaService.stopGeneration();

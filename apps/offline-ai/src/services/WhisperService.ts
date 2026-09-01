@@ -1,4 +1,8 @@
-// TODO: import { initWhisper, WhisperContext } from 'whisper.rn' once a dev client build exists.
+import { requestRecordingPermissionsAsync } from 'expo-audio';
+import { Directory, File, Paths, DownloadTask } from 'expo-file-system';
+import { initWhisper, type WhisperContext } from 'whisper.rn';
+import { RealtimeTranscriber } from 'whisper.rn/realtime-transcription/RealtimeTranscriber';
+import { AudioPcmStreamAdapter } from 'whisper.rn/realtime-transcription/adapters/AudioPcmStreamAdapter';
 
 export type WhisperModelSize = 'tiny' | 'base' | 'small';
 
@@ -10,14 +14,29 @@ export interface WhisperSnapshot {
 
 export type WhisperSubscriber = (snapshot: WhisperSnapshot) => void;
 
+const WHISPER_MODEL_URLS: Record<WhisperModelSize, string> = {
+  tiny: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin',
+  base: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin',
+  small: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin',
+};
+
+const whisperModelsDirectory = new Directory(Paths.document, 'whisper-models');
+
 /**
  * Buffers audio in native memory only — never writes audio to disk, since
  * users choosing an on-device transcriber are choosing it for privacy.
+ * Recording goes through whisper.rn's own RealtimeTranscriber, fed by
+ * @fugood/react-native-audio-pcm-stream (the pairing whisper.rn ships an
+ * adapter for) — there is no raw-WAV recording path on Android via Expo's
+ * recorder, so this is the only cross-platform capture route.
  */
 class WhisperService {
   private loadPromise: Promise<void> | null = null;
   private loadedSize: WhisperModelSize | null = null;
-  // TODO: private context: WhisperContext | null = null;
+  private context: WhisperContext | null = null;
+
+  private transcriber: RealtimeTranscriber | null = null;
+  private sliceTexts = new Map<number, string>();
 
   private snapshot: WhisperSnapshot = { isRecording: false, partialText: '', finalText: '' };
   private subscribers = new Set<WhisperSubscriber>();
@@ -51,19 +70,70 @@ class WhisperService {
   }
 
   private async doLoad(size: WhisperModelSize): Promise<void> {
-    // TODO: this.context = await initWhisper({ filePath: modelPathForSize(size) });
+    if (this.context) {
+      await this.context.release();
+      this.context = null;
+      this.loadedSize = null;
+    }
+
+    const filePath = await this.ensureModelDownloaded(size);
+    this.context = await initWhisper({ filePath, useGpu: true });
     this.loadedSize = size;
   }
 
+  private async ensureModelDownloaded(size: WhisperModelSize): Promise<string> {
+    if (!whisperModelsDirectory.exists) whisperModelsDirectory.create({ idempotent: true });
+
+    const destination = new File(whisperModelsDirectory, `ggml-${size}.bin`);
+    if (destination.exists) return destination.uri;
+
+    const task = new DownloadTask(WHISPER_MODEL_URLS[size], whisperModelsDirectory, { sessionType: 'background' });
+    const file = await task.downloadAsync();
+    if (!file) throw new Error(`Download of the ${size} whisper model was interrupted.`);
+    return file.uri;
+  }
+
+  private joinSliceTexts(): string {
+    return [...this.sliceTexts.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, text]) => text)
+      .filter(Boolean)
+      .join(' ')
+      .trim();
+  }
+
   async startRecording(): Promise<void> {
-    if (!this.loadedSize) throw new Error('No whisper model loaded');
+    if (!this.context) throw new Error('No whisper model loaded');
+
+    const { granted } = await requestRecordingPermissionsAsync();
+    if (!granted) throw new Error('Microphone permission was denied.');
+
+    this.sliceTexts.clear();
     this.setSnapshot({ isRecording: true, partialText: '', finalText: '' });
-    // TODO: this.context.startRealtimeTranscribe(..., (partial) => this.setSnapshot({ partialText: partial }));
+
+    this.transcriber = new RealtimeTranscriber(
+      { whisperContext: this.context, audioStream: new AudioPcmStreamAdapter() },
+      { audioSliceSec: 30, realtimeProcessingPauseMs: 300 },
+      {
+        onTranscribe: (event) => {
+          if (!event.data) return;
+          this.sliceTexts.set(event.sliceIndex, event.data.result);
+          this.setSnapshot({ partialText: this.joinSliceTexts() });
+        },
+        onError: () => {
+          this.setSnapshot({ isRecording: false });
+        },
+      }
+    );
+
+    await this.transcriber.start();
   }
 
   async stopRecording(): Promise<string> {
-    // TODO: const final = await this.context.stopRealtimeTranscribe(); clear the native audio buffer here.
-    const final = this.snapshot.partialText;
+    await this.transcriber?.stop();
+    this.transcriber = null;
+
+    const final = this.joinSliceTexts();
     this.setSnapshot({ isRecording: false, finalText: final, partialText: '' });
     return final;
   }

@@ -1,57 +1,41 @@
-import { useCallback, useState } from 'react';
-import { Image, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { imageGenService } from '../services/ImageGenService';
-import type { ImageGenSnapshot } from '../services/ImageGenService';
-import { promptEnhancementService } from '../services/PromptEnhancementService';
-import { useServiceSnapshot } from '../hooks/useServiceSnapshot';
+import { StyleSheet, Text, TextInput, View } from 'react-native';
+import { Button, Card, EmptyState, Screen, ScreenHeader } from '../components/ui';
+import { useTheme, radius, spacing, typography } from '../theme/theme';
 
+/**
+ * No on-device Stable Diffusion backend exists yet — QNN/MNN (Android) and
+ * Core ML (iOS) each need a bespoke native pipeline that isn't wired up.
+ * This screen stays visible so the tab structure matches the product, but
+ * generation is disabled rather than silently pretending to work.
+ */
 export default function ImageGenScreen() {
-  const snapshot = useServiceSnapshot<ImageGenSnapshot>(
-    useCallback((listener) => imageGenService.subscribe(listener), []),
-    useCallback(() => imageGenService.getSnapshot(), [])
-  );
-  const [prompt, setPrompt] = useState('');
-  const [enhance, setEnhance] = useState(true);
-
-  const handleGenerate = async () => {
-    if (!prompt.trim()) return;
-    const finalPrompt = enhance ? await promptEnhancementService.enhance(prompt) : prompt;
-    await imageGenService.generate(finalPrompt);
-  };
-
-  // Show a live preview every N denoising steps — without it the app looks frozen for 5-15s.
-  const previewSource = snapshot.previewUri ?? snapshot.resultUri;
+  const { colors } = useTheme();
 
   return (
-    <View style={styles.container}>
-      <TextInput style={styles.input} value={prompt} onChangeText={setPrompt} placeholder="A dog wearing sunglasses..." multiline />
+    <Screen>
+      <ScreenHeader title="Image" subtitle="Generate images fully on-device" />
+      <View style={{ paddingHorizontal: spacing.lg, gap: spacing.md, flex: 1 }}>
+        <Card>
+          <EmptyState
+            icon="construct-outline"
+            title="Not available yet"
+            subtitle="On-device image generation needs a native rendering pipeline (Core ML on iOS, MNN/QNN on Android) that hasn't been built. Chat, Vision, and Voice are fully on-device already."
+          />
+        </Card>
 
-      <TouchableOpacity style={styles.toggle} onPress={() => setEnhance((v) => !v)}>
-        <Text>{enhance ? '✓' : '○'} Enhance prompt with loaded LLM</Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity style={styles.button} onPress={handleGenerate} disabled={snapshot.isGenerating}>
-        <Text style={styles.buttonText}>{snapshot.isGenerating ? `Step ${snapshot.step}/${snapshot.totalSteps}` : 'Generate'}</Text>
-      </TouchableOpacity>
-
-      {previewSource ? (
-        <Image source={{ uri: previewSource }} style={styles.preview} resizeMode="contain" />
-      ) : (
-        <View style={styles.placeholder}>
-          <Text style={styles.placeholderText}>Preview will appear here</Text>
-        </View>
-      )}
-    </View>
+        <TextInput
+          editable={false}
+          style={[styles.input, { borderColor: colors.border, backgroundColor: colors.surfaceAlt, color: colors.textMuted }]}
+          placeholder="A dog wearing sunglasses..."
+          placeholderTextColor={colors.textMuted}
+        />
+        <Button label="Generate" onPress={() => {}} disabled icon="color-wand-outline" />
+        <Text style={[typography.caption, { color: colors.textMuted, textAlign: 'center' }]}>Coming in a future update.</Text>
+      </View>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16, gap: 12 },
-  input: { borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 8, padding: 12, minHeight: 60 },
-  toggle: { paddingVertical: 4 },
-  button: { backgroundColor: '#2563EB', borderRadius: 8, padding: 12, alignItems: 'center' },
-  buttonText: { color: 'white', fontWeight: '600' },
-  preview: { flex: 1, borderRadius: 8, backgroundColor: '#F3F4F6' },
-  placeholder: { flex: 1, borderRadius: 8, backgroundColor: '#F3F4F6', alignItems: 'center', justifyContent: 'center' },
-  placeholderText: { color: '#9CA3AF' },
+  input: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: spacing.md, fontSize: 15, minHeight: 60 },
 });
