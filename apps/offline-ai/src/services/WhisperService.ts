@@ -14,6 +14,14 @@ export interface WhisperSnapshot {
 
 export type WhisperSubscriber = (snapshot: WhisperSnapshot) => void;
 
+export interface WhisperModelStatus {
+  size: WhisperModelSize;
+  downloaded: boolean;
+  bytes: number;
+}
+
+export const WHISPER_MODEL_SIZES: WhisperModelSize[] = ['tiny', 'base', 'small'];
+
 const WHISPER_MODEL_URLS: Record<WhisperModelSize, string> = {
   tiny: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin',
   base: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin',
@@ -21,6 +29,10 @@ const WHISPER_MODEL_URLS: Record<WhisperModelSize, string> = {
 };
 
 const whisperModelsDirectory = new Directory(Paths.document, 'whisper-models');
+
+function modelFile(size: WhisperModelSize): File {
+  return new File(whisperModelsDirectory, `ggml-${size}.bin`);
+}
 
 /**
  * Buffers audio in native memory only — never writes audio to disk, since
@@ -84,13 +96,34 @@ class WhisperService {
   private async ensureModelDownloaded(size: WhisperModelSize): Promise<string> {
     if (!whisperModelsDirectory.exists) whisperModelsDirectory.create({ idempotent: true });
 
-    const destination = new File(whisperModelsDirectory, `ggml-${size}.bin`);
+    const destination = modelFile(size);
     if (destination.exists) return destination.uri;
 
     const task = new DownloadTask(WHISPER_MODEL_URLS[size], whisperModelsDirectory, { sessionType: 'background' });
     const file = await task.downloadAsync();
     if (!file) throw new Error(`Download of the ${size} whisper model was interrupted.`);
     return file.uri;
+  }
+
+  getModelStatus(size: WhisperModelSize): WhisperModelStatus {
+    const file = modelFile(size);
+    return { size, downloaded: file.exists, bytes: file.exists ? (file.size ?? 0) : 0 };
+  }
+
+  getAllModelStatuses(): WhisperModelStatus[] {
+    return WHISPER_MODEL_SIZES.map((size) => this.getModelStatus(size));
+  }
+
+  /** Deletes a downloaded model's cache file, releasing it first if it's currently loaded. */
+  async deleteModel(size: WhisperModelSize): Promise<void> {
+    if (this.loadedSize === size && this.context) {
+      await this.context.release();
+      this.context = null;
+      this.loadedSize = null;
+    }
+
+    const file = modelFile(size);
+    if (file.exists) file.delete();
   }
 
   private joinSliceTexts(): string {
