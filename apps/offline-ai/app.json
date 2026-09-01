@@ -7,7 +7,9 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.anonymous.offline-ai",
+      "appleTeamId": "CGHZ52V89D"
     },
     "android": {
       "adaptiveIcon": {
