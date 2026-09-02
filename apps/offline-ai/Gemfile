@@ -1,0 +1,9 @@
+source 'https://rubygems.org'
+
+# `bundle exec pod install` only exposes executables from gems actually listed here — CocoaPods
+# itself has to be declared, not just its plugin, or `pod` isn't in the bundle at all.
+gem 'cocoapods'
+
+# Lets ReactNativeImageGen.podspec declare `s.spm_dependency` for Apple's SPM-only
+# ml-stable-diffusion package — see packages/react-native-image-gen/README.md.
+gem 'cocoapods-spm'
