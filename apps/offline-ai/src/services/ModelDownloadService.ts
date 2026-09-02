@@ -1,5 +1,6 @@
 import { Directory, DownloadTask, File, Paths } from 'expo-file-system';
 import type { DownloadProgress, ModelInfo } from '../types/model';
+import { llamaService } from './LlamaService';
 
 export type DownloadSubscriber = (progress: DownloadProgress) => void;
 
@@ -94,7 +95,12 @@ class ModelDownloadService {
     // Repo-relative filenames can contain subfolders (e.g. a quant variant's own directory) — flatten for local storage.
     const localFilename = remoteFilename.replace(/[\\/]/g, '_');
     const destination = new File(modelsDirectory, localFilename);
-    if (destination.exists) destination.delete();
+    // Already on disk from a previous download (or survived an app restart) — reuse it instead of
+    // re-fetching potentially gigabytes of the same bytes.
+    if (destination.exists) {
+      onProgress(remoteFilename, destination.size ?? 0);
+      return destination;
+    }
 
     const task = new DownloadTask(`https://huggingface.co/${repo}/resolve/main/${remoteFilename}`, destination, {
       sessionType: 'background',
@@ -112,6 +118,25 @@ class ModelDownloadService {
 
   cancel(modelId: string): void {
     for (const task of this.activeTasks.get(modelId) ?? []) task.cancel();
+  }
+
+  /**
+   * Deletes a downloaded or imported model's local file(s), releasing it first if it's the
+   * currently loaded model — freeing the weights on disk while llama.rn still holds them mapped
+   * in memory leaves the delete looking successful but the file handle (and RAM) still pinned.
+   */
+  async deleteModel(model: ModelInfo): Promise<void> {
+    if (llamaService.getLoadedModel()?.id === model.id) {
+      await llamaService.release();
+    }
+
+    const file = new File(model.file.filename);
+    if (file.exists) file.delete();
+
+    if (model.mmproj) {
+      const mmprojFile = new File(model.mmproj.filename);
+      if (mmprojFile.exists) mmprojFile.delete();
+    }
   }
 }
 

@@ -1,7 +1,5 @@
 export type ModelCapability = 'text' | 'vision' | 'code';
 
-export type QuantLevel = 'f16' | 'q8_0' | 'q6_k' | 'q5_k_m' | 'q4_k_m' | 'q4_0';
-
 export interface ModelFile {
   /** Absolute path once downloaded, or a huggingface repo-relative filename before download. */
   filename: string;
@@ -13,7 +11,8 @@ export interface ModelInfo {
   displayName: string;
   organization: string;
   capability: ModelCapability;
-  quant: QuantLevel;
+  /** Raw quant token as it appears in the source filename (e.g. "Q4_K_M", "IQ2_S", "BF16") — free-form, not a fixed enum, since uploaders keep inventing new quant schemes. */
+  quant: string;
   /** The main GGUF weights file. */
   file: ModelFile;
   /** Present only for vision models — the multimodal projector companion file. */

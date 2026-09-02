@@ -38,7 +38,7 @@ class LocalModelImportService {
       displayName: name,
       organization: 'Imported',
       capability: 'text',
-      quant: quant ?? 'q4_k_m',
+      quant: quant ?? 'unknown',
       file: { filename: destination.uri, sizeBytes: destination.size },
     };
   }

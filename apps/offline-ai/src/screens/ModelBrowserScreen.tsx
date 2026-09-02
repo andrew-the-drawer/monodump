@@ -27,7 +27,7 @@ function useDownloadProgress(modelId: string): DownloadProgress | null {
 
 export default function ModelBrowserScreen() {
   const { colors } = useTheme();
-  const { downloadedModels, discoveryResults, setDiscoveryResults, addDownloadedModel } = useModelStore();
+  const { downloadedModels, discoveryResults, setDiscoveryResults, addDownloadedModel, removeDownloadedModel } = useModelStore();
   const { loadedModel, setLoadedModel } = useLlmStore();
   const [query, setQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
@@ -74,6 +74,21 @@ export default function ModelBrowserScreen() {
     } finally {
       setLoadingModelId(null);
     }
+  };
+
+  const handleDelete = (model: ModelInfo) => {
+    Alert.alert('Delete model', `Remove "${model.displayName}" from this device? You'll need to re-download it to use it again.`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          await modelDownloadService.deleteModel(model);
+          removeDownloadedModel(model.id);
+          if (loadedModel?.id === model.id) setLoadedModel(null);
+        },
+      },
+    ]);
   };
 
   return (
@@ -145,6 +160,7 @@ export default function ModelBrowserScreen() {
                       isLoaded={loadedModel?.id === item.id}
                       isLoading={loadingModelId === item.id}
                       onPress={() => handleLoad(item)}
+                      onDelete={() => handleDelete(item)}
                     />
                   ))}
                 </View>
@@ -171,11 +187,23 @@ export default function ModelBrowserScreen() {
   );
 }
 
-function ModelRow({ model, isLoaded, isLoading, onPress }: { model: ModelInfo; isLoaded: boolean; isLoading: boolean; onPress: () => void }) {
+function ModelRow({
+  model,
+  isLoaded,
+  isLoading,
+  onPress,
+  onDelete,
+}: {
+  model: ModelInfo;
+  isLoaded: boolean;
+  isLoading: boolean;
+  onPress: () => void;
+  onDelete: () => void;
+}) {
   const { colors } = useTheme();
   return (
-    <TouchableOpacity onPress={onPress} disabled={isLoaded || isLoading} activeOpacity={0.7}>
-      <Card style={styles.row}>
+    <Card style={styles.row}>
+      <TouchableOpacity onPress={onPress} disabled={isLoaded || isLoading} activeOpacity={0.7} style={[styles.row, { flex: 1 }]}>
         <View style={[styles.capabilityIcon, { backgroundColor: colors.primarySoft }]}>
           <Ionicons name={CAPABILITY_ICON[model.capability]} size={18} color={colors.primary} />
         </View>
@@ -194,8 +222,11 @@ function ModelRow({ model, isLoaded, isLoading, onPress }: { model: ModelInfo; i
         ) : (
           <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
         )}
-      </Card>
-    </TouchableOpacity>
+      </TouchableOpacity>
+      <TouchableOpacity onPress={onDelete} disabled={isLoading} hitSlop={8} style={{ marginLeft: spacing.sm }}>
+        <Ionicons name="trash-outline" size={18} color={isLoading ? colors.textMuted : colors.danger} />
+      </TouchableOpacity>
+    </Card>
   );
 }
 
