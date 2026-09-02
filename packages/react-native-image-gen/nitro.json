@@ -1,0 +1,19 @@
+{
+  "$schema": "https://nitro.margelo.com/nitro.schema.json",
+  "cxxNamespace": ["monodump", "imagegen"],
+  "ios": {
+    "iosModuleName": "ReactNativeImageGen"
+  },
+  "android": {
+    "androidNamespace": ["monodump", "imagegen"],
+    "androidCxxLibName": "ReactNativeImageGen"
+  },
+  "autolinking": {
+    "ImageGen": {
+      "ios": {
+        "language": "swift",
+        "implementationClassName": "HybridImageGen"
+      }
+    }
+  }
+}
