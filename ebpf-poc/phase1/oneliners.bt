@@ -1,0 +1,22 @@
+# Phase 1 lab: 5 bpftrace one-liners
+# Run each with: sudo bpftrace -e '<line>'
+# VM: multipass "joyful-chihuahua", Ubuntu 24.04, kernel 6.8.0 (BTF present)
+
+# 1. Count syscalls by process name
+tracepoint:raw_syscalls:sys_enter { @[comm] = count(); }
+
+# 2. Trace execve: who exec'd what
+tracepoint:syscalls:sys_enter_execve { printf("%s -> %s\n", comm, str(args.filename)); }
+
+# 3. Histogram of read() return sizes (bytes actually read)
+tracepoint:syscalls:sys_exit_read /args.ret > 0/ { @bytes = hist(args.ret); }
+
+# 4. Latency of a syscall (read): stash timestamp on entry, diff on exit
+tracepoint:syscalls:sys_enter_read { @start[tid] = nsecs; }
+tracepoint:syscalls:sys_exit_read /@start[tid]/ {
+    @latency_ns = hist(nsecs - @start[tid]);
+    delete(@start[tid]);
+}
+
+# 5. Print (aggregated) kernel stack on a kprobe
+kprobe:vfs_open { @[kstack(3)] = count(); }
