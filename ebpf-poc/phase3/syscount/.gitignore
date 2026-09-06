@@ -1,0 +1,5 @@
+# Generated at build time (see Makefile) - not portable across kernels/checkouts.
+vmlinux.h
+*.o
+*.skel.h
+syscount
