@@ -167,3 +167,10 @@ drm-poc/**/*.db
 drm-poc/bin/
 drm-poc/server/*.pem
 drm-poc/server/*.bin
+# merkle-index-poc: server DB, cloned demo repos, client keys/state, run logs
+merkle-index-poc/.mindex-server/
+merkle-index-poc/.demo/
+merkle-index-poc/.demo-inv/
+merkle-index-poc/*.log
+**/.mindex/
+.pytest_cache/
